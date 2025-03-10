@@ -1,7 +1,0 @@
-path: C:\Users\Alejandro\OneDrive\Escritorio\Physarum_Image_detection\Datos_physarum
-train: /images/train
-val: /images/test
-
-
-#Clases
-0 : Physarum
