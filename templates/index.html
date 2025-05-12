@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="{{ url_for('static', filename='styles.css') }}" rel="stylesheet" />
+    <title>Object Detection</title>
+    
+</head>
+<body>
+    <section id="header">
+        <h1>¡Hola!</h1>
+        <h3>¡La página que siempre habías buscado!</h3>
+    </section>
+    <h1>Detecta a tu physarum</h1>
+    <h2>Selecciona una opción:</h2>
+    <div>
+    <a href="/upload_image">Subir imagen</a>
+    <a href="/start_webcam">Usar webcam</a>
+    <a href="/upload_video_form">Subir video</a>
+    </div>
+</body>
+</html>

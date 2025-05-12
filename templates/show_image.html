@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="{{ url_for('static', filename='styles.css') }}" rel="stylesheet" />
+    <title>Resultados</title>
+</head>
+<body>
+    <h1>Imágenes procesadas:</h1>
+    {% for filename in filenames %}
+        <div style="margin-bottom: 20px;">
+            <img src="{{ url_for('send_image', filename=filename) }}" style="max-width: 600px;">
+        </div>
+    {% endfor %}
+    {% for filename in filenames %}
+    <div>
+        <img src="{{ url_for('send_image', filename=filename) }}" width="600"><br>
+        <a href="{{ url_for('send_image', filename=filename) }}" download>Descargar {{ filename }}</a>
+    </div>
+{% endfor %}
+
+    <a href="/">Subir más imágenes</a>
+</body>
+</html>
+

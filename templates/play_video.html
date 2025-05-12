@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="{{ url_for('static', filename='styles.css') }}" rel="stylesheet" />
+    <title>Video Playback</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+        }
+        img {
+            width: 1020px; /* Set video feed width */
+            height: 600px; /* Set video feed height */
+            border: 2px solid #ccc; /* Optional border */
+            border-radius: 8px; /* Optional rounded corners */
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2); /* Optional shadow */
+        }
+        a {
+            margin-top: 20px;
+            text-decoration: none;
+            color: #007bff;
+            font-size: 18px;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <h1>Video Playback with Object Detection</h1>
+    <div>
+        <img src="{{ url_for('video_feed', filename=filename) }}" />
+    </div>
+    <video width="600" controls>
+        <source src="{{ url_for('send_video', filename=filename) }}" type="video/mp4">
+        Tu navegador no soporta el elemento de video.
+      </video>
+      <br>
+      <a href="{{ url_for('send_video', filename=filename) }}" download>Descargar video</a>
+      
+    <a href="/">Regresar/a>
+</body>
+</html>

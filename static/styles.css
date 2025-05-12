@@ -1,0 +1,48 @@
+body {
+    display: flex;
+    flex-direction: column;
+    background-color: #b6b6b0;
+    }
+h3 {
+    color: #000000;
+    font-size: 1.5em;
+    margin-bottom: 10px;
+}
+a {
+    text-decoration: none;
+    color: #0e11db;
+    font-size: 1.2em;
+}
+
+#header {
+    display: flex;
+    margin-top: -20px;
+    justify-content: space-between;
+    align-items: center;
+    height: 8rem;
+    background-color: #b6b6b0;
+    color: #ffffff;
+    text-align: center;
+}
+
+
+#uploadForm {
+    margin-bottom: 20px;
+    }
+    input[type="file"] {
+        margin-right: 10px;
+    }
+    #startWebcam {
+        padding: 10px 20px;
+        cursor: pointer;
+        background-color: #4CAF50;
+        color: white;
+        border: none;
+        border-radius: 5px;
+    }
+
+li a:hover {
+    color: #eed816;
+    transition: color 0.3s;
+    cursor: pointer;
+    }
