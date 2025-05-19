@@ -1,50 +1,109 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="es">
 <head>
     <meta charset="UTF-8">
+    <title>Reproducción de Video con Detección</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link href="{{ url_for('static', filename='styles.css') }}" rel="stylesheet" />
-    <title>Video Playback</title>
     <style>
         body {
             display: flex;
             flex-direction: column;
-            justify-content: center;
             align-items: center;
-            height: 100vh;
-            margin: 0;
+            font-family: Arial, sans-serif;
             background-color: #f0f0f0;
+            padding: 20px;
         }
-        img {
-            width: 1020px; /* Set video feed width */
-            height: 600px; /* Set video feed height */
-            border: 2px solid #ccc; /* Optional border */
-            border-radius: 8px; /* Optional rounded corners */
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2); /* Optional shadow */
+
+        img, video {
+            width: 1020px;
+            height: 600px;
+            border: 2px solid #ccc;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
         }
+
+        h1 {
+            margin-bottom: 10px;
+        }
+
         a {
-            margin-top: 20px;
             text-decoration: none;
             color: #007bff;
             font-size: 18px;
+            margin-top: 10px;
         }
+
         a:hover {
             text-decoration: underline;
         }
     </style>
 </head>
 <body>
-    <h1>Video Playback with Object Detection</h1>
-    <div>
-        <img src="{{ url_for('video_feed', filename=filename) }}" />
-    </div>
-    <video width="600" controls>
+
+    <h1>Video con Detección y Seguimiento</h1>
+
+    <!-- Video procesado en vivo -->
+    <img src="{{ url_for('video_feed', filename=filename) }}" alt="Video con detección en vivo" />
+
+    <!-- Video original reproducible -->
+    <video controls>
         <source src="{{ url_for('send_video', filename=filename) }}" type="video/mp4">
-        Tu navegador no soporta el elemento de video.
-      </video>
-      <br>
-      <a href="{{ url_for('send_video', filename=filename) }}" download>Descargar video</a>
-      
-    <a href="/">Regresar/a>
+        Tu navegador no soporta el video.
+    </video>
+
+    <!-- Enlace de descarga -->
+    <a href="{{ url_for('send_video', filename=filename) }}" download>Descargar video original</a>
+    <a href="{{ url_for('send_annotated_video', filename=filename) }}" download>Descargar video anotado</a>
+
+
+    <!-- Gráfico de movimiento -->
+    {% set plot_path = 'movement_logs/' + filename.rsplit('.', 1)[0] + '_plot.png' %}
+    <h2>Movimiento relativo respecto al punto medio</h2>
+    <img src="{{ url_for('static', filename=plot_path) }}" alt="Gráfica de movimiento" />
+
+    <!-- Punto medio con clic -->
+    <video id="video" width="1020" height="600" autoplay muted></video>
+    <script>
+    let middlePoint = null;
+    const video = document.getElementById('video');
+
+    // Mostrar texto con el punto seleccionado
+    const pointDisplay = document.createElement('p');
+    pointDisplay.style.fontSize = '18px';
+    pointDisplay.style.marginBottom = '20px';
+    pointDisplay.textContent = 'Punto medio no seleccionado';
+    video.insertAdjacentElement('afterend', pointDisplay);
+
+    // Al cargar, obtener punto guardado si existe y mostrarlo
+    fetch('/get_reference_point')
+        .then(response => response.json())
+        .then(data => {
+            if (data.x !== undefined && data.y !== undefined) {
+                middlePoint = {x: data.x, y: data.y};
+                pointDisplay.textContent = `Punto medio actual: (${Math.round(data.x)}, ${Math.round(data.y)})`;
+            }
+        });
+
+    video.addEventListener('click', function(event) {
+        const rect = this.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+
+        middlePoint = {x: x, y: y};
+        pointDisplay.textContent = `Punto medio seleccionado: (${Math.round(x)}, ${Math.round(y)})`;
+
+        fetch('/set_reference_point', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(middlePoint)
+        });
+    });
+</script>
+
+
+    <a href="/">Regresar al inicio</a>
 </body>
 </html>
+
