@@ -5,7 +5,7 @@ from flask import Flask, render_template, Response, request, redirect, url_for, 
 from ultralytics import YOLO
 import csv
 
-# Load the YOLOv8 model
+# Load the YOLOv11 model
 model = YOLO("yolo11_custom_3.pt")
 names = model.model.names
 
@@ -74,6 +74,57 @@ def detect_objects_from_webcam():
 def webcam_feed():
     return Response(detect_objects_from_webcam(),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
+
+
+@app.route('/upload_image', methods=['GET', 'POST'])
+def upload_image():
+    if request.method == 'POST':
+        if 'files' not in request.files:
+            return redirect(request.url)
+
+        files = request.files.getlist('files')
+        if not files or files[0].filename == '':
+            return redirect(request.url)
+
+        if not os.path.exists('uploads'):
+            os.makedirs('uploads')
+
+        processed_filenames = []
+
+        for file in files:
+            image_path = os.path.join('uploads', file.filename)
+            file.save(image_path)
+
+            # Leer y procesar imagen
+            frame = cv2.imread(image_path)
+            frame = cv2.resize(frame, (1020, 600))
+
+            results = model.track(frame, persist=True)
+
+            if results[0].boxes is not None and results[0].boxes.id is not None:
+                boxes = results[0].boxes.xyxy.int().cpu().tolist()
+                class_ids = results[0].boxes.cls.int().cpu().tolist()
+                track_ids = results[0].boxes.id.int().cpu().tolist()
+
+                for box, class_id, track_id in zip(boxes, class_ids, track_ids):
+                    c = names[class_id]
+                    x1, y1, x2, y2 = box
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    cv2.putText(frame, f'{track_id} - {c}', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
+
+            processed_filename = f"processed_{file.filename}"
+            processed_path = os.path.join('uploads', processed_filename)
+            cv2.imwrite(processed_path, frame)
+            processed_filenames.append(processed_filename)
+
+        return render_template('show_image.html', filenames=processed_filenames)
+
+    return render_template('upload_image.html')
+
+
+@app.route('/uploads_image/<filename>')
+def send_image(filename):
+    return send_from_directory('uploads', filename)
 
 
 @app.route('/upload_video_form')
@@ -146,7 +197,7 @@ def detect_objects_from_video(video_path, reference=None):
         # Resize the frame
         frame = cv2.resize(frame, (1020, 600))
 
-        # Run YOLOv8 tracking
+        # Run YOLOv11 tracking
         results = model.track(frame, persist=True)
 
         if results[0].boxes is not None and results[0].boxes.id is not None:
@@ -236,58 +287,6 @@ def send_annotated_video(filename):
         return send_from_directory(os.path.dirname(annotated_video_path), os.path.basename(annotated_video_path))
     else:
         return "Video anotado no encontrado", 404
-
-
-@app.route('/upload_image', methods=['GET', 'POST'])
-def upload_image():
-    if request.method == 'POST':
-        if 'files' not in request.files:
-            return redirect(request.url)
-
-        files = request.files.getlist('files')
-        if not files or files[0].filename == '':
-            return redirect(request.url)
-
-        if not os.path.exists('uploads'):
-            os.makedirs('uploads')
-
-        processed_filenames = []
-
-        for file in files:
-            image_path = os.path.join('uploads', file.filename)
-            file.save(image_path)
-
-            # Leer y procesar imagen
-            frame = cv2.imread(image_path)
-            frame = cv2.resize(frame, (1020, 600))
-
-            results = model.track(frame, persist=True)
-
-            if results[0].boxes is not None and results[0].boxes.id is not None:
-                boxes = results[0].boxes.xyxy.int().cpu().tolist()
-                class_ids = results[0].boxes.cls.int().cpu().tolist()
-                track_ids = results[0].boxes.id.int().cpu().tolist()
-
-                for box, class_id, track_id in zip(boxes, class_ids, track_ids):
-                    c = names[class_id]
-                    x1, y1, x2, y2 = box
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    cv2.putText(frame, f'{track_id} - {c}', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
-
-            processed_filename = f"processed_{file.filename}"
-            processed_path = os.path.join('uploads', processed_filename)
-            cv2.imwrite(processed_path, frame)
-            processed_filenames.append(processed_filename)
-
-        return render_template('show_image.html', filenames=processed_filenames)
-
-    return render_template('upload_image.html')
-
-
-@app.route('/uploads_image/<filename>')
-def send_image(filename):
-    return send_from_directory('uploads', filename)
-
 
 if __name__ == '__main__':
     app.run('0.0.0.0',debug=False, port=8080)
