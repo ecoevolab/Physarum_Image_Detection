@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Seleccionar Punto de Referencia</title>
+</head>
+<body>
+    <h1>Paso 1: Selecciona el punto de referencia</h1>
+    <p>Haz clic en el lugar deseado para establecer el punto medio.</p>
+    <img id="firstFrame" src="{{ url_for('get_first_frame', filename=filename) }}" style="cursor:crosshair;">
+    <br>
+    <button onclick="startVideo()">Iniciar Análisis</button>
+
+    <script>
+        document.getElementById('firstFrame').addEventListener('click', function(event) {
+            const rect = event.target.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+            
+            fetch('/set_reference_point', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ x: x, y: y })
+            }).then(response => response.json())
+              .then(data => {
+                  alert(data.message);
+              });
+        });
+
+        function startVideo() {
+            window.location.href = "{{ url_for('play_video', filename=filename) }}";
+        }
+    </script>
+</body>
+</html>
