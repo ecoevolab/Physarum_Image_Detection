@@ -54,20 +54,23 @@ def detect_objects_from_webcam():
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
-def detect_objects_from_video(video_path, reference=None):
+def detect_objects_from_video(video_path, reference=None, max_detections=2):
     """Procesa un archivo de video con detección, tracking y registro de movimiento."""
     cap = cv2.VideoCapture(video_path)
     count = 0
     movement_log = []
 
+    # The max_detections value is now passed as a parameter
+    print(f"Límite de detecciones establecido en: {max_detections}")
+
     video_name = os.path.splitext(os.path.basename(video_path))[0]
     save_dir = os.path.join('detected_frames', video_name)
     os.makedirs(save_dir, exist_ok=True)
-    
+
     log_dir = 'movement_logs'
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, f"{video_name}.csv")
-    
+
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     output_path = os.path.join(save_dir, f"{video_name}_annotated.mp4")
     out = cv2.VideoWriter(output_path, fourcc, 20.0, (1020, 600))
@@ -79,17 +82,29 @@ def detect_objects_from_video(video_path, reference=None):
         count += 1
         if count % 2 != 0:
             continue
-        
+
         frame = cv2.resize(frame, (1020, 600))
         results = model.track(frame, persist=True)
         
+        # ... (Rest of the function logic is the same) ...
+        # (Your filtering code should now work without the session call)
         if results[0].boxes is not None and results[0].boxes.id is not None:
-            boxes = results[0].boxes.xyxy.int().cpu().tolist()
-            class_ids = results[0].boxes.cls.int().cpu().tolist()
-            track_ids = results[0].boxes.id.int().cpu().tolist()
-
+            boxes_data = results[0].boxes
+            
+            # Ordena las detecciones por confianza en orden descendente
+            sorted_indices = boxes_data.conf.argsort(descending=True)
+            
+            # Limita las detecciones al número máximo del usuario
+            top_detections_indices = sorted_indices[:max_detections]
+            
+            # ... (Rest of your detection and drawing logic) ...
+            boxes = boxes_data.xyxy[top_detections_indices].int().cpu().tolist()
+            class_ids = boxes_data.cls[top_detections_indices].int().cpu().tolist()
+            track_ids = boxes_data.id[top_detections_indices].int().cpu().tolist()
+            
             if reference:
                 ref_x, ref_y = int(reference['x']), int(reference['y'])
+                cv2.circle(frame, (ref_x, ref_y), 5, (0, 0, 255), -1)
 
             for box, class_id, track_id in zip(boxes, class_ids, track_ids):
                 class_name = names[class_id].lower()
@@ -105,17 +120,17 @@ def detect_objects_from_video(video_path, reference=None):
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                 cv2.putText(frame, f'{track_id} - {class_name}', (x1, y1 - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
-
+        
         out.write(frame)
         _, buffer = cv2.imencode('.jpg', frame)
         frame_bytes = buffer.tobytes()
 
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-    
+
     cap.release()
     out.release()
-
+    
     if movement_log:
         with open(log_path, 'w', newline='') as f:
             writer = csv.writer(f)
@@ -207,9 +222,12 @@ def webcam_feed():
 
 @app.route('/video_feed/<filename>')
 def video_feed(filename):
+    # Retrieve values from the session within the route function
     reference = session.get('reference_point')
+    max_detections = session.get('max_detections', 2)
     video_path = os.path.join('uploads', filename)
-    return Response(detect_objects_from_video(video_path, reference),
+    # Pass the values as arguments to the processing function
+    return Response(detect_objects_from_video(video_path, reference, max_detections),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/uploads_image/<filename>')
@@ -279,6 +297,20 @@ def get_first_frame(filename):
     frame_bytes = buffer.tobytes()
 
     return Response(frame_bytes, mimetype='image/jpeg')
+
+# Coloca esta nueva ruta junto a las otras rutas de tu aplicación.
+@app.route('/set_max_detections', methods=['POST'])
+def set_max_detections():
+    data = request.get_json()
+    if data and 'max_detections' in data:
+        try:
+            max_num = int(data['max_detections'])
+            session['max_detections'] = max_num
+            return jsonify({'status': 'ok', 'message': 'Límite guardado'})
+        except ValueError:
+            return jsonify({'status': 'error', 'message': 'Valor inválido'}), 400
+    return jsonify({'status': 'error', 'message': 'Datos inválidos'}), 400
+
 @app.route('/upload_video/<filename>')
 def play_video(filename):
     return render_template('play_video.html', filename=filename)

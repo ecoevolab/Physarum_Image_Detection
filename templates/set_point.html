@@ -8,7 +8,10 @@
     <p>Haz clic en el lugar deseado para establecer el punto medio.</p>
     <img id="firstFrame" src="{{ url_for('get_first_frame', filename=filename) }}" style="cursor:crosshair;">
     <br>
-    <button onclick="startVideo()">Iniciar Análisis</button>
+    
+    <h2>Paso 2: Ingresa el número de Physarums</h2>
+    <input type="number" id="num_physarums" placeholder="Número de Physarums" value="1">
+    <button onclick="setAndStart()">Iniciar Análisis</button>
 
     <script>
         document.getElementById('firstFrame').addEventListener('click', function(event) {
@@ -26,8 +29,20 @@
               });
         });
 
-        function startVideo() {
-            window.location.href = "{{ url_for('play_video', filename=filename) }}";
+        function setAndStart() {
+            const num = document.getElementById('num_physarums').value;
+            fetch('/set_max_detections', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ max_detections: num })
+            }).then(response => response.json())
+              .then(data => {
+                  if (data.status === 'ok') {
+                      window.location.href = "{{ url_for('play_video', filename=filename) }}";
+                  } else {
+                      alert('Error al guardar el número de physarums.');
+                  }
+              });
         }
     </script>
 </body>
