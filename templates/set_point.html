@@ -1,46 +1,84 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Seleccionar Punto de Referencia</title>
+    <title>Seleccionar Puntos de Referencia</title>
 </head>
 <body>
-    <h1>Paso 1: Selecciona el punto de referencia</h1>
-    <p>Haz clic en el lugar deseado para establecer el punto medio.</p>
-    <img id="firstFrame" src="{{ url_for('get_first_frame', filename=filename) }}" style="cursor:crosshair;">
-    <br>
-    
-    <h2>Paso 2: Ingresa el número de Physarums</h2>
+    <h1>Paso 1: Ingresa el número de Physarums</h1>
+    <p>Luego, haz clic para marcar un punto para cada uno.</p>
     <input type="number" id="num_physarums" placeholder="Número de Physarums" value="1">
-    <button onclick="setAndStart()">Iniciar Análisis</button>
+    <button onclick="setNumPhysarums()">Confirmar</button>
+    <br><br>
+
+    <img id="firstFrame" src="{{ url_for('get_first_frame', filename=filename) }}" style="cursor:crosshair;">
+    <p id="click-count">Puntos marcados: 0</p>
+    <br>
+
+    <button onclick="startVideo()">Iniciar Análisis</button>
 
     <script>
+        let numPhysarums = 1;
+        let referencePoints = [];
+
+        function setNumPhysarums() {
+            numPhysarums = parseInt(document.getElementById('num_physarums').value);
+            alert(`Listo para marcar ${numPhysarums} puntos.`);
+            document.getElementById('num_physarums').disabled = true;
+        }
+
         document.getElementById('firstFrame').addEventListener('click', function(event) {
+            if (referencePoints.length >= numPhysarums) {
+                alert(`Ya has marcado ${numPhysarums} puntos. Inicia el análisis.`);
+                return;
+            }
+
             const rect = event.target.getBoundingClientRect();
             const x = event.clientX - rect.left;
             const y = event.clientY - rect.top;
             
-            fetch('/set_reference_point', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ x: x, y: y })
-            }).then(response => response.json())
-              .then(data => {
-                  alert(data.message);
-              });
+            referencePoints.push({ x: x, y: y });
+            document.getElementById('click-count').textContent = `Puntos marcados: ${referencePoints.length}`;
+
+            // You can add visual feedback here, like a dot
+            const img = document.getElementById('firstFrame');
+            const dot = document.createElement('div');
+            dot.style.position = 'absolute';
+            dot.style.left = `${event.clientX}px`;
+            dot.style.top = `${event.clientY}px`;
+            dot.style.width = '10px';
+            dot.style.height = '10px';
+            dot.style.backgroundColor = 'red';
+            dot.style.borderRadius = '50%';
+            document.body.appendChild(dot);
         });
 
-        function setAndStart() {
-            const num = document.getElementById('num_physarums').value;
-            fetch('/set_max_detections', {
+        function startVideo() {
+            if (referencePoints.length !== numPhysarums) {
+                alert(`Debes marcar exactamente ${numPhysarums} puntos.`);
+                return;
+            }
+
+            fetch('/set_multiple_points', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ max_detections: num })
+                body: JSON.stringify({ points: referencePoints })
             }).then(response => response.json())
               .then(data => {
                   if (data.status === 'ok') {
-                      window.location.href = "{{ url_for('play_video', filename=filename) }}";
+                      // Now save the number of physarums and redirect
+                      const num = document.getElementById('num_physarums').value;
+                      fetch('/set_max_detections', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ max_detections: num })
+                      }).then(res => res.json())
+                        .then(resData => {
+                            if (resData.status === 'ok') {
+                                window.location.href = "{{ url_for('play_video', filename=filename) }}";
+                            }
+                        });
                   } else {
-                      alert('Error al guardar el número de physarums.');
+                      alert('Error al guardar los puntos de referencia.');
                   }
               });
         }
