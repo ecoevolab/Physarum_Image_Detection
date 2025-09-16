@@ -243,15 +243,27 @@ def webcam_feed():
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/video_feed/<filename>')
+# Modifica la ruta video_feed
+@app.route('/video_feed/<filename>')
 def video_feed(filename):
-    # Recupera los valores de la sesión dentro de la función de la ruta
-    reference_points = session.get('reference_points')
-    max_detections = session.get('max_detections', 2)
-    video_path = os.path.join('uploads', filename)
+    # Lee los datos de la URL
+    points_encoded = request.args.get('points')
+    max_detections = request.args.get('max_detections', 2)
 
-    # Pasa los valores como argumentos a la función de procesamiento
-    return Response(detect_objects_from_video(video_path, reference_points, max_detections),
+    if not points_encoded:
+        return "Error: Puntos de referencia no encontrados en la URL.", 400
+
+    import json
+    reference_points = json.loads(points_encoded)
+    
+    video_path = os.path.join('uploads', filename)
+    
+    # Pasa los valores a la función de procesamiento
+    return Response(detect_objects_from_video(video_path, reference_points, int(max_detections)),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
+
+# La función set_multiple_points ya no es necesaria, puedes eliminarla
+# y la ruta set_max_detections tampoco se usará en este enfoque.
 
 @app.route('/uploads_image/<filename>')
 def send_image(filename):
@@ -271,13 +283,6 @@ def send_annotated_video(filename):
         return "Video anotado no encontrado", 404
 
 ### Rutas de API para manejo de datos
-@app.route('/set_multiple_points', methods=['POST'])
-def set_multiple_points():
-    data = request.get_json()
-    if data and 'points' in data and isinstance(data['points'], list):
-        session['reference_points'] = data['points']
-        return jsonify({'status': 'ok', 'message': f"{len(data['points'])} puntos guardados"})
-    return jsonify({'status': 'error', 'message': 'Datos inválidos'}), 400
 
 @app.route('/upload', methods=['POST'])
 def upload_video():
@@ -296,9 +301,23 @@ def upload_video():
 
     return redirect(url_for('set_point_page', filename=file.filename))
 
+def get_video_dimensions(video_path):
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return None, None
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
+    return width, height
+
 @app.route('/set_point_page/<filename>')
 def set_point_page(filename):
-    return render_template('set_point.html', filename=filename)
+    video_path = os.path.join('uploads', filename)
+    orig_width, orig_height = get_video_dimensions(video_path)
+    return render_template('set_point.html', 
+                           filename=filename, 
+                           orig_width=orig_width, 
+                           orig_height=orig_height)
 
 @app.route('/get_first_frame/<filename>')
 def get_first_frame(filename):
@@ -319,17 +338,6 @@ def get_first_frame(filename):
 
     return Response(frame_bytes, mimetype='image/jpeg')
 
-@app.route('/set_max_detections', methods=['POST'])
-def set_max_detections():
-    data = request.get_json()
-    if data and 'max_detections' in data:
-        try:
-            max_num = int(data['max_detections'])
-            session['max_detections'] = max_num
-            return jsonify({'status': 'ok', 'message': 'Límite guardado'})
-        except ValueError:
-            return jsonify({'status': 'error', 'message': 'Valor inválido'}), 400
-    return jsonify({'status': 'error', 'message': 'Datos inválidos'}), 400
 
 @app.route('/upload_video/<filename>')
 def play_video(filename):
@@ -341,4 +349,3 @@ def play_video(filename):
 # =============================================================================
 if __name__ == '__main__':
     app.run('0.0.0.0', debug=False, port=8080)
-

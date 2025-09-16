@@ -32,19 +32,25 @@
                 return;
             }
 
-            const rect = event.target.getBoundingClientRect();
-            const x = event.clientX - rect.left;
-            const y = event.clientY - rect.top;
-            
-            referencePoints.push({ x: x, y: y });
-            document.getElementById('click-count').textContent = `Puntos marcados: ${referencePoints.length}`;
+            const imgElement = document.getElementById('firstFrame');
+            const rect = imgElement.getBoundingClientRect();
 
-            // You can add visual feedback here, like a dot
-            const img = document.getElementById('firstFrame');
+            // Coordenadas relativas al elemento de la imagen
+            const clickX = event.clientX - rect.left;
+            const clickY = event.clientY - rect.top;
+
+            // Escala las coordenadas al tamaño de procesamiento del video (1020x600)
+            const scaledX = (clickX / rect.width) * 1020;
+            const scaledY = (clickY / rect.height) * 600;
+
+            referencePoints.push({ x: scaledX, y: scaledY });
+            document.getElementById('click-count').textContent = `Puntos marcados: ${referencePoints.length}`;
+            
+            // Retroalimentación visual: dibuja un punto rojo en la posición de clic
             const dot = document.createElement('div');
             dot.style.position = 'absolute';
-            dot.style.left = `${event.clientX}px`;
-            dot.style.top = `${event.clientY}px`;
+            dot.style.left = `${event.clientX - 5}px`; 
+            dot.style.top = `${event.clientY - 5}px`;
             dot.style.width = '10px';
             dot.style.height = '10px';
             dot.style.backgroundColor = 'red';
@@ -58,29 +64,9 @@
                 return;
             }
 
-            fetch('/set_multiple_points', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ points: referencePoints })
-            }).then(response => response.json())
-              .then(data => {
-                  if (data.status === 'ok') {
-                      // Now save the number of physarums and redirect
-                      const num = document.getElementById('num_physarums').value;
-                      fetch('/set_max_detections', {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ max_detections: num })
-                      }).then(res => res.json())
-                        .then(resData => {
-                            if (resData.status === 'ok') {
-                                window.location.href = "{{ url_for('play_video', filename=filename) }}";
-                            }
-                        });
-                  } else {
-                      alert('Error al guardar los puntos de referencia.');
-                  }
-              });
+            const pointsString = JSON.stringify(referencePoints);
+            
+            window.location.href = "{{ url_for('video_feed', filename=filename) }}?points=" + encodeURIComponent(pointsString) + "&max_detections=" + numPhysarums;
         }
     </script>
 </body>
