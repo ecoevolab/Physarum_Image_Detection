@@ -63,7 +63,7 @@ def detect_objects_from_video(video_path, reference_points=None, max_detections=
     
     initial_positions = {}
 
-    print(f"Límite de detecciones establecido en: {max_detecciones}")
+    print(f"Límite de detecciones establecido en: {max_detections}")
 
     video_name = os.path.splitext(os.path.basename(video_path))[0]
     save_dir = os.path.join('detected_frames', video_name)
@@ -250,7 +250,7 @@ def video_feed(filename):
     video_path = os.path.join('uploads', filename)
 
     # Pasa los valores como argumentos a la función de procesamiento
-    return Response(detect_objects_from_video(video_path, reference_points, max_detecciones),
+    return Response(detect_objects_from_video(video_path, reference_points, max_detections),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/uploads_image/<filename>')
