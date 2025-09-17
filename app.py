@@ -55,11 +55,12 @@ def detect_objects_from_webcam():
                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
 def detect_objects_from_video(video_path, reference_points=None, max_detections=2):
-    """Procesa un archivo de video con detección, tracking y registro de movimiento."""
+    """Procesa un archivo de video con detección, tracking y registro de movimiento y tamaño."""
     
     cap = cv2.VideoCapture(video_path)
     count = 0
     movement_log = []
+    size_log = [] # Nueva lista para el registro de tamaño
     
     initial_positions = {}
 
@@ -108,6 +109,13 @@ def detect_objects_from_video(video_path, reference_points=None, max_detections=
                 center_x = (x1 + x2) // 2
                 center_y = (y1 + y2) // 2
                 
+                # --- NUEVA LÓGICA DE CÁLCULO DE ÁREA ---
+                if class_name == "physarum":
+                    width = x2 - x1
+                    height = y2 - y1
+                    area = width * height
+                    size_log.append((track_id, count, area)) # Guarda el ID, fotograma y área
+
                 if class_name == "physarum":
                     if track_id not in initial_positions:
                         if reference_points:
@@ -144,6 +152,7 @@ def detect_objects_from_video(video_path, reference_points=None, max_detections=
     cap.release()
     out.release()
     
+    # --- LÓGICA DE GRÁFICOS Y CSV PARA MOVIMIENTO ---
     if movement_log:
         grouped_movements = {}
         for track_id, frame, dx, dy in movement_log:
@@ -173,6 +182,36 @@ def detect_objects_from_video(video_path, reference_points=None, max_detections=
             
             plot_path = os.path.join(log_dir, f'{video_name}_track_{track_id}_plot.png')
             plt.savefig(plot_path)
+            plt.close()
+
+    # --- NUEVA LÓGICA DE GRÁFICOS Y CSV PARA TAMAÑO ---
+    if size_log:
+        grouped_sizes = {}
+        for track_id, frame, area in size_log:
+            if track_id not in grouped_sizes:
+                grouped_sizes[track_id] = []
+            grouped_sizes[track_id].append((frame, area))
+
+        for track_id, data in grouped_sizes.items():
+            size_log_path = os.path.join(log_dir, f"{video_name}_track_{track_id}_size.csv")
+            with open(size_log_path, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['frame', 'area'])
+                writer.writerows(data)
+
+            frames = [row[0] for row in data]
+            areas = [row[1] for row in data]
+
+            plt.figure(figsize=(10, 5))
+            plt.plot(frames, areas, label='Área del recuadro')
+            plt.xlabel('Frame')
+            plt.ylabel('Área (píxeles)')
+            plt.title(f'Tamaño del recuadro del objeto ID {track_id}')
+            plt.legend()
+            plt.grid(True)
+
+            size_plot_path = os.path.join(log_dir, f'{video_name}_track_{track_id}_size_plot.png')
+            plt.savefig(size_plot_path)
             plt.close()
 
 def process_image_files(files):
