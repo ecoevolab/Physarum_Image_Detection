@@ -54,15 +54,14 @@ def detect_objects_from_webcam():
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
-def detect_objects_from_video(video_path, reference_points=None, max_detections=2):
-    """Procesa un archivo de video con detección, tracking y registro de movimiento y tamaño."""
+def detect_objects_from_video(video_path, max_detections=2):
+    """Procesa un archivo de video con detección, tracking y registro de tamaño."""
     
     cap = cv2.VideoCapture(video_path)
     count = 0
-    movement_log = []
-    size_log = [] # Nueva lista para el registro de tamaño
+    size_log = [] # Solo queda la lista de tamaño
     
-    initial_positions = {}
+    # La variable initial_positions ya no es necesaria, la eliminamos.
 
     print(f"Límite de detecciones establecido en: {max_detections}")
 
@@ -70,9 +69,8 @@ def detect_objects_from_video(video_path, reference_points=None, max_detections=
     save_dir = os.path.join('detected_frames', video_name)
     os.makedirs(save_dir, exist_ok=True)
     
-    log_dir = 'movement_logs'
+    log_dir = 'movement_logs' # Conservamos el directorio para las gráficas de tamaño
     os.makedirs(log_dir, exist_ok=True)
-    log_path = os.path.join(log_dir, f"{video_name}.csv")
     
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     output_path = os.path.join(save_dir, f"{video_name}_annotated.mp4")
@@ -87,6 +85,7 @@ def detect_objects_from_video(video_path, reference_points=None, max_detections=
             continue
         
         frame = cv2.resize(frame, (1020, 600))
+        # Usamos el tracker para IDs estables, como querías
         results = model.track(frame, persist=True)
         
         if results[0].boxes is not None and results[0].boxes.id is not None:
@@ -98,46 +97,20 @@ def detect_objects_from_video(video_path, reference_points=None, max_detections=
             boxes = boxes_data.xyxy[top_detections_indices].int().cpu().tolist()
             class_ids = boxes_data.cls[top_detections_indices].int().cpu().tolist()
             track_ids = boxes_data.id[top_detections_indices].int().cpu().tolist()
-            
-            if reference_points:
-                for point in reference_points:
-                    cv2.circle(frame, (int(point['x']), int(point['y'])), 5, (0, 0, 255), -1)
 
             for box, class_id, track_id in zip(boxes, class_ids, track_ids):
                 class_name = names[class_id].lower()
                 x1, y1, x2, y2 = box
-                center_x = (x1 + x2) // 2
-                center_y = (y1 + y2) // 2
                 
-                # --- NUEVA LÓGICA DE CÁLCULO DE ÁREA ---
                 if class_name == "physarum":
+                    # Lógica de cálculo de área
                     width = x2 - x1
                     height = y2 - y1
                     area = width * height
-                    size_log.append((track_id, count, area)) # Guarda el ID, fotograma y área
-
-                if class_name == "physarum":
-                    if track_id not in initial_positions:
-                        if reference_points:
-                            min_dist = float('inf')
-                            closest_ref_point = None
-                            
-                            for ref_point in reference_points:
-                                dist = ((center_x - ref_point['x'])**2 + (center_y - ref_point['y'])**2)**0.5
-                                if dist < min_dist:
-                                    min_dist = dist
-                                    closest_ref_point = ref_point
-                            
-                            if closest_ref_point:
-                                initial_positions[track_id] = closest_ref_point
-                            
-                    if track_id in initial_positions:
-                        ref_x = initial_positions[track_id]['x']
-                        ref_y = initial_positions[track_id]['y']
-                        dx = center_x - ref_x
-                        dy = center_y - ref_y
-                        movement_log.append((track_id, count, dx, dy))
-                        
+                    size_log.append((track_id, count, area))
+                    
+                # ELIMINADO: TODA la lógica de movimiento relativo (if track_id not in initial_positions...)
+                
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                 cv2.putText(frame, f'ID:{track_id} - {class_name}', (x1, y1 - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
@@ -152,37 +125,39 @@ def detect_objects_from_video(video_path, reference_points=None, max_detections=
     cap.release()
     out.release()
     
-    # --- LÓGICA DE GRÁFICOS Y CSV PARA MOVIMIENTO ---
-    if movement_log:
-        grouped_movements = {}
-        for track_id, frame, dx, dy in movement_log:
-            if track_id not in grouped_movements:
-                grouped_movements[track_id] = []
-            grouped_movements[track_id].append((frame, dx, dy))
+    # ELIMINADO: Lógica de gráficos y CSV para movimiento (movement_log)
+    
+    # --- LÓGICA DE GRÁFICOS Y CSV PARA TAMAÑO (size_log) ---
+    if size_log:
+        grouped_sizes = {}
+        for track_id, frame, area in size_log:
+            if track_id not in grouped_sizes:
+                grouped_sizes[track_id] = []
+            grouped_sizes[track_id].append((frame, area))
 
-        for track_id, data in grouped_movements.items():
-            track_log_path = os.path.join(log_dir, f"{video_name}_track_{track_id}.csv")
-            with open(track_log_path, 'w', newline='') as f:
+        for track_id, data in grouped_sizes.items():
+            size_log_path = os.path.join(log_dir, f"{video_name}_track_{track_id}_size.csv")
+            with open(size_log_path, 'w', newline='') as f:
                 writer = csv.writer(f)
-                writer.writerow(['frame', 'dx', 'dy'])
+                writer.writerow(['frame', 'area'])
                 writer.writerows(data)
 
             frames = [row[0] for row in data]
-            dx_vals = [row[1] for row in data]
-            dy_vals = [row[2] for row in data]
+            areas = [row[1] for row in data]
 
             plt.figure(figsize=(10, 5))
-            plt.plot(frames, dx_vals, label='dx')
-            plt.plot(frames, dy_vals, label='dy')
+            plt.plot(frames, areas, label='Área del recuadro')
             plt.xlabel('Frame')
-            plt.ylabel('Desplazamiento relativo')
-            plt.title(f'Movimiento relativo del objeto ID {track_id}')
+            plt.ylabel('Área (píxeles)')
+            plt.title(f'Tamaño del recuadro del objeto ID {track_id}')
             plt.legend()
             plt.grid(True)
-            
-            plot_path = os.path.join(log_dir, f'{video_name}_track_{track_id}_plot.png')
-            plt.savefig(plot_path)
+
+            size_plot_path = os.path.join(log_dir, f'{video_name}_track_{track_id}_size_plot.png')
+            plt.savefig(size_plot_path)
             plt.close()
+
+# ... (El resto de tu código, como process_image_files y las rutas, sigue igual)
 
     # --- NUEVA LÓGICA DE GRÁFICOS Y CSV PARA TAMAÑO ---
     if size_log:
@@ -229,7 +204,7 @@ def process_image_files(files):
         
         frame = cv2.imread(image_path)
         frame = cv2.resize(frame, (1020, 600))
-        results = model.track(frame, persist=True)
+        results = model.track(frame, persist=True, tracker = "botsort.yaml")
 
         if results[0].boxes is not None and results[0].boxes.id is not None:
             boxes = results[0].boxes.xyxy.int().cpu().tolist()
@@ -282,27 +257,21 @@ def webcam_feed():
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/video_feed/<filename>')
-# Modifica la ruta video_feed
-@app.route('/video_feed/<filename>')
 def video_feed(filename):
-    # Lee los datos de la URL
-    points_encoded = request.args.get('points')
-    max_detections = request.args.get('max_detections', 2)
-
-    if not points_encoded:
-        return "Error: Puntos de referencia no encontrados en la URL.", 400
-
-    import json
-    reference_points = json.loads(points_encoded)
+    """
+    Inicia el stream de detección de video con configuraciones por defecto.
+    Ya no lee 'points' o 'max_detections' de la URL.
+    """
+    # Establece valores por defecto directamente. max_detections es 2 por defecto.
+    max_detections = 2 
     
     video_path = os.path.join('uploads', filename)
     
-    # Pasa los valores a la función de procesamiento
-    return Response(detect_objects_from_video(video_path, reference_points, int(max_detections)),
-                    mimetype='multipart/x-mixed-replace; boundary=frame')
-
-# La función set_multiple_points ya no es necesaria, puedes eliminarla
-# y la ruta set_max_detections tampoco se usará en este enfoque.
+    # 3. La función detect_objects_from_video ahora recibe el único parámetro necesario
+    return Response(
+        detect_objects_from_video(video_path, max_detections),
+        mimetype='multipart/x-mixed-replace; boundary=frame'
+    )
 
 @app.route('/uploads_image/<filename>')
 def send_image(filename):
@@ -323,6 +292,10 @@ def send_annotated_video(filename):
 
 ### Rutas de API para manejo de datos
 
+# ... (código anterior) ...
+
+### Rutas de API para manejo de datos
+
 @app.route('/upload', methods=['POST'])
 def upload_video():
     if 'file' not in request.files:
@@ -338,45 +311,21 @@ def upload_video():
     file_path = os.path.join('uploads', file.filename)
     file.save(file_path)
 
-    return redirect(url_for('set_point_page', filename=file.filename))
+    # --- LÍNEA CORREGIDA ---
+    # Redirige directamente a la página de reproducción del video.
+    return redirect(url_for('play_video', filename=file.filename))
 
-def get_video_dimensions(video_path):
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        return None, None
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    cap.release()
-    return width, height
+# ELIMINAR: def get_video_dimensions(video_path):
 
-@app.route('/set_point_page/<filename>')
-def set_point_page(filename):
-    video_path = os.path.join('uploads', filename)
-    orig_width, orig_height = get_video_dimensions(video_path)
-    return render_template('set_point.html', 
-                           filename=filename, 
-                           orig_width=orig_width, 
-                           orig_height=orig_height)
+# ELIMINAR: @app.route('/set_point_page/<filename>')
+# def set_point_page(filename):
+#     # Esta ruta ya no tiene sentido
+#     return redirect(url_for('play_video', filename=filename)) 
 
-@app.route('/get_first_frame/<filename>')
-def get_first_frame(filename):
-    video_path = os.path.join('uploads', filename)
-    cap = cv2.VideoCapture(video_path)
-    
-    if not cap.isOpened():
-        return "Error al abrir el video", 500
-
-    ret, frame = cap.read()
-    cap.release()
-    
-    if not ret:
-        return "No se pudo leer el primer fotograma", 500
-
-    _, buffer = cv2.imencode('.jpg', frame)
-    frame_bytes = buffer.tobytes()
-
-    return Response(frame_bytes, mimetype='image/jpeg')
-
+# ELIMINAR: @app.route('/get_first_frame/<filename>')
+# def get_first_frame(filename):
+#     # Esta ruta ya no tiene sentido
+#     return # ... (código anterior)
 
 @app.route('/upload_video/<filename>')
 def play_video(filename):
