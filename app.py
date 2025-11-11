@@ -1,3 +1,10 @@
+# =============================================================================
+# 0. Matplotlib Backend Configuration (NEW)
+# =============================================================================
+import matplotlib
+# CRITICAL: Use the 'Agg' backend to avoid GUI conflicts in Flask's background thread
+matplotlib.use('Agg') 
+# =============================================================================
 import os
 import cv2
 import numpy as np
@@ -7,13 +14,16 @@ from flask import (
 )
 from ultralytics import YOLO
 import csv
-import matplotlib.pyplot as plt
 
 # =============================================================================
 # 1. Configuración de la Aplicación y Carga del Modelo
 # =============================================================================
 app = Flask(__name__)
 app.secret_key = '777' 
+
+# Import matplotlib.pyplot HERE, after the backend is set
+import matplotlib.pyplot as plt 
+# ... (Rest of your code) ...
 
 # Carga el modelo YOLOv11
 model = YOLO("yolo11_custom_3.pt")
@@ -22,15 +32,19 @@ names = model.model.names
 # =============================================================================
 # 2. Funciones de Procesamiento de Video e Imagen
 # =============================================================================
-def detect_objects_from_video(video_path, max_detections=2):
-    """Procesa un archivo de video usando SOLO detección (NO tracking persistente) para evitar el error 'with_reid'."""
+initial_coords = {} 
+
+def detect_objects_from_video(video_path, max_detections=100):
+    """Procesa un archivo de video con detección, tracking, y movimiento relativo (Origen 0,0)."""
     
     cap = cv2.VideoCapture(video_path)
     count = 0
     size_log = [] 
-
-    print(f"Límite de detecciones establecido en: {max_detections}")
-
+    movement_log = [] 
+    # Aseguramos que la variable del origen se limpie si se procesa un nuevo video
+    global initial_coords
+    initial_coords = {} 
+    
     video_name = os.path.splitext(os.path.basename(video_path))[0]
     save_dir = os.path.join('detected_frames', video_name)
     os.makedirs(save_dir, exist_ok=True)
@@ -51,14 +65,9 @@ def detect_objects_from_video(video_path, max_detections=2):
             continue
         
         frame = cv2.resize(frame, (1020, 600))
+        results = model.track(frame, persist=True)
         
-        # --- CAMBIO CRÍTICO: Usar SOLO detección para saltar el error del tracker ---
-        results = model(frame) # Usa model() en lugar de model.track()
-        
-        # Como no hay tracking, asignamos un ID temporal para las gráficas.
-        track_id_counter = 1 
-        
-        if results[0].boxes is not None: # El ID ya no existe en el resultado de model()
+        if results[0].boxes is not None and results[0].boxes.id is not None:
             boxes_data = results[0].boxes
             
             sorted_indices = boxes_data.conf.argsort(descending=True)
@@ -66,24 +75,41 @@ def detect_objects_from_video(video_path, max_detections=2):
             
             boxes = boxes_data.xyxy[top_detections_indices].int().cpu().tolist()
             class_ids = boxes_data.cls[top_detections_indices].int().cpu().tolist()
+            track_ids = boxes_data.id[top_detections_indices].int().cpu().tolist()
             
-            # Los track_ids ya no se obtienen del modelo, los simulamos
-            
-            for box, class_id in zip(boxes, class_ids):
-                track_id = track_id_counter # Usar un ID temporal
-                track_id_counter += 1
-                
+            for box, class_id, track_id in zip(boxes, class_ids, track_ids):
                 class_name = names.get(class_id, "unknown").lower()
                 x1, y1, x2, y2 = box
                 
+                # --- CALCULAR CENTRO ABSOLUTO ---
+                center_x = (x1 + x2) // 2
+                center_y = (y1 + y2) // 2
+                
                 if class_name == "physarum":
+                    
+                    # 1. Definir Origen y Calcular Desplazamiento Relativo (NUEVO)
+                    if track_id not in initial_coords:
+                        # Si es la primera vez, guarda las coordenadas actuales como origen (0,0)
+                        initial_coords[track_id] = (center_x, center_y)
+                    
+                    origin_x, origin_y = initial_coords[track_id]
+                    
+                    relative_x = center_x - origin_x
+                    relative_y = center_y - origin_y
+                    
+                    # 2. Registro de Tamaño
                     width = x2 - x1
                     height = y2 - y1
                     area = width * height
                     size_log.append((track_id, count, area))
                     
+                    # 3. Registro de Movimiento (AHORA RELATIVO)
+                    movement_log.append((track_id, count, relative_x, relative_y))
+                    
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(frame, f'ID:{track_id} - {class_name}', (x1, y1 - 10),
+                
+                # Vuelve al etiquetado básico y estable
+                cv2.putText(frame, f'{track_id} - {class_name}', (x1, y1 - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
 
         out.write(frame)
@@ -96,10 +122,42 @@ def detect_objects_from_video(video_path, max_detections=2):
     cap.release()
     out.release()
     
-    # --- LÓGICA DE GRÁFICOS Y CSV PARA TAMAÑO (size_log) ---
-    # El código de las gráficas es robusto y usará los IDs temporales que generamos
+    # --- LÓGICA DE GRÁFICOS Y CSV PARA MOVIMIENTO (ACTUALIZADA) ---
+    if movement_log:
+        grouped_movements = {}
+        for track_id, frame, rx, ry in movement_log: # rx, ry son relative_x, relative_y
+            if track_id not in grouped_movements:
+                grouped_movements[track_id] = []
+            grouped_movements[track_id].append((frame, rx, ry))
+
+        for track_id, data in grouped_movements.items():
+            track_log_path = os.path.join(log_dir, f"{video_name}_track_{track_id}_coords.csv")
+            with open(track_log_path, 'w', newline='') as f:
+                writer = csv.writer(f)
+                # Cambiamos los nombres de las columnas
+                writer.writerow(['frame', 'relative_x', 'relative_y']) 
+                writer.writerows(data)
+
+            frames = [row[0] for row in data]
+            rx_vals = [row[1] for row in data] # Usamos rx_vals
+            ry_vals = [row[2] for row in data] # Usamos ry_vals
+
+            plt.figure(figsize=(10, 5))
+            plt.plot(frames, rx_vals, label='Desplazamiento X')
+            plt.plot(frames, ry_vals, label='Desplazamiento Y')
+            plt.xlabel('Frame')
+            # Cambiamos el título del eje Y
+            plt.ylabel('Desplazamiento Relativo (píxeles)') 
+            plt.title(f'Movimiento Relativo del objeto ID {track_id} (Origen 0,0)')
+            plt.legend()
+            plt.grid(True)
+            
+            plot_path = os.path.join(log_dir, f'{video_name}_track_{track_id}_movement_plot.png')
+            plt.savefig(plot_path)
+            plt.close()
+
+    # --- LÓGICA DE GRÁFICOS Y CSV PARA TAMAÑO (size_log) --- (Sin cambios)
     if size_log:
-        # ... (tu código de agrupación y generación de gráficas size_log aquí) ...
         grouped_sizes = {}
         for track_id, frame, area in size_log:
             if track_id not in grouped_sizes:
