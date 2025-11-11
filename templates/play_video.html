@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <title>Reproducción de Video con Detección</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link href="{{ url_for('static', filename='styles.css') }}" rel="stylesheet" />
     <style>
         body {
             display: flex;
@@ -33,6 +32,7 @@
             color: #007bff;
             font-size: 18px;
             margin-top: 10px;
+            margin-left: 10px;
         }
 
         a:hover {
@@ -42,22 +42,20 @@
 </head>
 <body>
 
-    <h1>Video con Detección y Seguimiento</h1>
+    <h1>Video con Detección y Seguimiento de Tamaño</h1>
 
-    <!-- Video procesado en vivo -->
     <img src="{{ url_for('video_feed', filename=filename) }}" alt="Video con detección en vivo" />
 
-    <!-- Video original reproducible -->
     <video controls>
         <source src="{{ url_for('send_video', filename=filename) }}" type="video/mp4">
         Tu navegador no soporta el video.
     </video>
 
-    <!-- Enlace de descarga -->
-    <a href="{{ url_for('send_video', filename=filename) }}" download>Descargar video original</a>
-    <a href="{{ url_for('send_annotated_video', filename=filename) }}" download>Descargar video anotado</a>
-
+    <div>
+        <a href="{{ url_for('send_video', filename=filename) }}" download>Descargar video original</a>
+        <a href="{{ url_for('send_annotated_video', filename=filename) }}" download>Descargar video anotado</a>
+    </div>
+    
     <a href="/">Regresar al inicio</a>
 </body>
 </html>
-

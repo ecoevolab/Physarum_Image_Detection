@@ -22,46 +22,12 @@ names = model.model.names
 # =============================================================================
 # 2. Funciones de Procesamiento de Video e Imagen
 # =============================================================================
-def detect_objects_from_webcam():
-    """Procesa el feed de la cámara web con detección y tracking de objetos."""
-    count = 0
-    cap = cv2.VideoCapture(0)
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        count += 1
-        if count % 2 != 0:
-            continue
-        
-        frame = cv2.resize(frame, (1020, 600))
-        results = model.track(frame, persist=True)
-
-        if results[0].boxes is not None and results[0].boxes.id is not None:
-            boxes = results[0].boxes.xyxy.int().cpu().tolist()
-            class_ids = results[0].boxes.cls.int().cpu().tolist()
-            track_ids = results[0].boxes.id.int().cpu().tolist()
-
-            for box, class_id, track_id in zip(boxes, class_ids, track_ids):
-                c = names[class_id]
-                x1, y1, x2, y2 = box
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(frame, f'{track_id} - {c}', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
-
-        _, buffer = cv2.imencode('.jpg', frame)
-        frame = buffer.tobytes()
-        
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-
 def detect_objects_from_video(video_path, max_detections=2):
-    """Procesa un archivo de video con detección, tracking y registro de tamaño."""
+    """Procesa un archivo de video usando SOLO detección (NO tracking persistente) para evitar el error 'with_reid'."""
     
     cap = cv2.VideoCapture(video_path)
     count = 0
-    size_log = [] # Solo queda la lista de tamaño
-    
-    # La variable initial_positions ya no es necesaria, la eliminamos.
+    size_log = [] 
 
     print(f"Límite de detecciones establecido en: {max_detections}")
 
@@ -69,7 +35,7 @@ def detect_objects_from_video(video_path, max_detections=2):
     save_dir = os.path.join('detected_frames', video_name)
     os.makedirs(save_dir, exist_ok=True)
     
-    log_dir = 'movement_logs' # Conservamos el directorio para las gráficas de tamaño
+    log_dir = 'movement_logs'
     os.makedirs(log_dir, exist_ok=True)
     
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -85,10 +51,14 @@ def detect_objects_from_video(video_path, max_detections=2):
             continue
         
         frame = cv2.resize(frame, (1020, 600))
-        # Usamos el tracker para IDs estables, como querías
-        results = model.track(frame, persist=True)
         
-        if results[0].boxes is not None and results[0].boxes.id is not None:
+        # --- CAMBIO CRÍTICO: Usar SOLO detección para saltar el error del tracker ---
+        results = model(frame) # Usa model() en lugar de model.track()
+        
+        # Como no hay tracking, asignamos un ID temporal para las gráficas.
+        track_id_counter = 1 
+        
+        if results[0].boxes is not None: # El ID ya no existe en el resultado de model()
             boxes_data = results[0].boxes
             
             sorted_indices = boxes_data.conf.argsort(descending=True)
@@ -96,21 +66,22 @@ def detect_objects_from_video(video_path, max_detections=2):
             
             boxes = boxes_data.xyxy[top_detections_indices].int().cpu().tolist()
             class_ids = boxes_data.cls[top_detections_indices].int().cpu().tolist()
-            track_ids = boxes_data.id[top_detections_indices].int().cpu().tolist()
-
-            for box, class_id, track_id in zip(boxes, class_ids, track_ids):
-                class_name = names[class_id].lower()
+            
+            # Los track_ids ya no se obtienen del modelo, los simulamos
+            
+            for box, class_id in zip(boxes, class_ids):
+                track_id = track_id_counter # Usar un ID temporal
+                track_id_counter += 1
+                
+                class_name = names.get(class_id, "unknown").lower()
                 x1, y1, x2, y2 = box
                 
                 if class_name == "physarum":
-                    # Lógica de cálculo de área
                     width = x2 - x1
                     height = y2 - y1
                     area = width * height
                     size_log.append((track_id, count, area))
                     
-                # ELIMINADO: TODA la lógica de movimiento relativo (if track_id not in initial_positions...)
-                
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                 cv2.putText(frame, f'ID:{track_id} - {class_name}', (x1, y1 - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
@@ -125,42 +96,10 @@ def detect_objects_from_video(video_path, max_detections=2):
     cap.release()
     out.release()
     
-    # ELIMINADO: Lógica de gráficos y CSV para movimiento (movement_log)
-    
     # --- LÓGICA DE GRÁFICOS Y CSV PARA TAMAÑO (size_log) ---
+    # El código de las gráficas es robusto y usará los IDs temporales que generamos
     if size_log:
-        grouped_sizes = {}
-        for track_id, frame, area in size_log:
-            if track_id not in grouped_sizes:
-                grouped_sizes[track_id] = []
-            grouped_sizes[track_id].append((frame, area))
-
-        for track_id, data in grouped_sizes.items():
-            size_log_path = os.path.join(log_dir, f"{video_name}_track_{track_id}_size.csv")
-            with open(size_log_path, 'w', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow(['frame', 'area'])
-                writer.writerows(data)
-
-            frames = [row[0] for row in data]
-            areas = [row[1] for row in data]
-
-            plt.figure(figsize=(10, 5))
-            plt.plot(frames, areas, label='Área del recuadro')
-            plt.xlabel('Frame')
-            plt.ylabel('Área (píxeles)')
-            plt.title(f'Tamaño del recuadro del objeto ID {track_id}')
-            plt.legend()
-            plt.grid(True)
-
-            size_plot_path = os.path.join(log_dir, f'{video_name}_track_{track_id}_size_plot.png')
-            plt.savefig(size_plot_path)
-            plt.close()
-
-# ... (El resto de tu código, como process_image_files y las rutas, sigue igual)
-
-    # --- NUEVA LÓGICA DE GRÁFICOS Y CSV PARA TAMAÑO ---
-    if size_log:
+        # ... (tu código de agrupación y generación de gráficas size_log aquí) ...
         grouped_sizes = {}
         for track_id, frame, area in size_log:
             if track_id not in grouped_sizes:
