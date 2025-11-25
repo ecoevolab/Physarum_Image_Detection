@@ -1,6 +1,3 @@
-# =============================================================================
-# 0. Matplotlib Backend Configuration (NEW)
-# =============================================================================
 import matplotlib
 # CRITICAL: Use the 'Agg' backend to avoid GUI conflicts in Flask's background thread
 matplotlib.use('Agg') 
@@ -14,16 +11,13 @@ from flask import (
 )
 from ultralytics import YOLO
 import csv
+import matplotlib.pyplot as plt 
 
 # =============================================================================
 # 1. Configuración de la Aplicación y Carga del Modelo
 # =============================================================================
 app = Flask(__name__)
 app.secret_key = '777' 
-
-# Import matplotlib.pyplot HERE, after the backend is set
-import matplotlib.pyplot as plt 
-# ... (Rest of your code) ...
 
 # Carga el modelo YOLOv11
 model = YOLO("yolo11_custom_3.pt")
@@ -32,19 +26,28 @@ names = model.model.names
 # =============================================================================
 # 2. Funciones de Procesamiento de Video e Imagen
 # =============================================================================
+# Diccionario para almacenar las coordenadas iniciales de cada ID de objeto (Origen 0,0)
 initial_coords = {} 
+id_persistence_count = {} 
+MIN_PERSISTENCE_FRAMES = 70 
 
 def detect_objects_from_video(video_path, max_detections=100):
-    """Procesa un archivo de video con detección, tracking, y movimiento relativo (Origen 0,0)."""
+    """
+    Procesa un archivo de video con detección, tracking, registro de tamaño y movimiento relativo.
+    Incluye un filtro de persistencia temporal (MIN_PERSISTENCE_FRAMES).
+    """
+    global initial_coords
+    global id_persistence_count
     
     cap = cv2.VideoCapture(video_path)
     count = 0
-    size_log = [] 
     movement_log = [] 
-    # Aseguramos que la variable del origen se limpie si se procesa un nuevo video
-    global initial_coords
-    initial_coords = {} 
+    size_log = [] 
     
+    # Reinicia las coordenadas de origen al inicio del video
+    initial_coords = {} 
+    id_persistence_count = {}
+
     video_name = os.path.splitext(os.path.basename(video_path))[0]
     save_dir = os.path.join('detected_frames', video_name)
     os.makedirs(save_dir, exist_ok=True)
@@ -65,17 +68,21 @@ def detect_objects_from_video(video_path, max_detections=100):
             continue
         
         frame = cv2.resize(frame, (1020, 600))
-        results = model.track(frame, persist=True)
         
+        # Usamos model.track() con IOU para NMS
+        results = model.track(frame, persist=True, iou=0.4, conf = 0.7) 
+        
+        ids_in_frame = set() # Rastrea los IDs presentes en este frame
+
         if results[0].boxes is not None and results[0].boxes.id is not None:
             boxes_data = results[0].boxes
             
             sorted_indices = boxes_data.conf.argsort(descending=True)
-            top_detections_indices = sorted_indices[:max_detections]
+            final_indices = sorted_indices
             
-            boxes = boxes_data.xyxy[top_detections_indices].int().cpu().tolist()
-            class_ids = boxes_data.cls[top_detections_indices].int().cpu().tolist()
-            track_ids = boxes_data.id[top_detections_indices].int().cpu().tolist()
+            boxes = boxes_data.xyxy[final_indices].int().cpu().tolist()
+            class_ids = boxes_data.cls[final_indices].int().cpu().tolist()
+            track_ids = boxes_data.id[final_indices].int().cpu().tolist()
             
             for box, class_id, track_id in zip(boxes, class_ids, track_ids):
                 class_name = names.get(class_id, "unknown").lower()
@@ -85,33 +92,47 @@ def detect_objects_from_video(video_path, max_detections=100):
                 center_x = (x1 + x2) // 2
                 center_y = (y1 + y2) // 2
                 
+                # Agregamos el ID al set de IDs actuales
+                ids_in_frame.add(track_id)
+                
                 if class_name == "physarum":
                     
-                    # 1. Definir Origen y Calcular Desplazamiento Relativo (NUEVO)
-                    if track_id not in initial_coords:
-                        # Si es la primera vez, guarda las coordenadas actuales como origen (0,0)
-                        initial_coords[track_id] = (center_x, center_y)
+                    # --- 1. LÓGICA DE PERSISTENCIA (CONTEO) ---
+                    id_persistence_count[track_id] = id_persistence_count.get(track_id, 0) + 1
                     
-                    origin_x, origin_y = initial_coords[track_id]
-                    
-                    relative_x = center_x - origin_x
-                    relative_y = center_y - origin_y
-                    
-                    # 2. Registro de Tamaño
-                    width = x2 - x1
-                    height = y2 - y1
-                    area = width * height
-                    size_log.append((track_id, count, area))
-                    
-                    # 3. Registro de Movimiento (AHORA RELATIVO)
-                    movement_log.append((track_id, count, relative_x, relative_y))
-                    
+                    # --- 2. REGISTRO CONDICIONAL: Solo si es persistente ---
+                    if id_persistence_count[track_id] >= MIN_PERSISTENCE_FRAMES:
+                        
+                        # A. Lógica de Movimiento Relativo (Origen 0,0)
+                        if track_id not in initial_coords:
+                            initial_coords[track_id] = (center_x, center_y)
+                        
+                        origin_x, origin_y = initial_coords[track_id]
+                        
+                        relative_x = center_x - origin_x
+                        relative_y = -(center_y - origin_y) # Invertimos Y
+                        
+                        movement_log.append((track_id, count, relative_x, relative_y))
+                        
+                        # B. Lógica de Tamaño
+                        width = x2 - x1
+                        height = y2 - y1
+                        area = width * height
+                        size_log.append((track_id, count, area))
+                        
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                
-                # Vuelve al etiquetado básico y estable
                 cv2.putText(frame, f'{track_id} - {class_name}', (x1, y1 - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
 
+        # --- 3. ELIMINAR IDs que desaparecen (Reiniciar conteo) ---
+        keys_to_remove = []
+        for track_id in list(id_persistence_count.keys()):
+            if track_id not in ids_in_frame:
+                keys_to_remove.append(track_id)
+                
+        for track_id in keys_to_remove:
+            del id_persistence_count[track_id]
+            
         out.write(frame)
         _, buffer = cv2.imencode('.jpg', frame)
         frame_bytes = buffer.tobytes()
@@ -122,31 +143,29 @@ def detect_objects_from_video(video_path, max_detections=100):
     cap.release()
     out.release()
     
-    # --- LÓGICA DE GRÁFICOS Y CSV PARA MOVIMIENTO (ACTUALIZADA) ---
+    # --- LÓGICA DE GRÁFICOS Y CSV PARA MOVIMIENTO ---
     if movement_log:
         grouped_movements = {}
-        for track_id, frame, rx, ry in movement_log: # rx, ry son relative_x, relative_y
+        for track_id, frame, rx, ry in movement_log:
             if track_id not in grouped_movements:
                 grouped_movements[track_id] = []
             grouped_movements[track_id].append((frame, rx, ry))
 
         for track_id, data in grouped_movements.items():
-            track_log_path = os.path.join(log_dir, f"{video_name}_track_{track_id}_coords.csv")
+            track_log_path = os.path.join(log_dir, f"{video_name}_track_{track_id}_movement.csv")
             with open(track_log_path, 'w', newline='') as f:
                 writer = csv.writer(f)
-                # Cambiamos los nombres de las columnas
                 writer.writerow(['frame', 'relative_x', 'relative_y']) 
                 writer.writerows(data)
 
             frames = [row[0] for row in data]
-            rx_vals = [row[1] for row in data] # Usamos rx_vals
-            ry_vals = [row[2] for row in data] # Usamos ry_vals
+            rx_vals = [row[1] for row in data]
+            ry_vals = [row[2] for row in data]
 
             plt.figure(figsize=(10, 5))
-            plt.plot(frames, rx_vals, label='Desplazamiento X')
-            plt.plot(frames, ry_vals, label='Desplazamiento Y')
+            plt.plot(frames, rx_vals, label='Desplazamiento Horizontal (X)')
+            plt.plot(frames, ry_vals, label='Desplazamiento Vertical (Y)')
             plt.xlabel('Frame')
-            # Cambiamos el título del eje Y
             plt.ylabel('Desplazamiento Relativo (píxeles)') 
             plt.title(f'Movimiento Relativo del objeto ID {track_id} (Origen 0,0)')
             plt.legend()
@@ -156,7 +175,7 @@ def detect_objects_from_video(video_path, max_detections=100):
             plt.savefig(plot_path)
             plt.close()
 
-    # --- LÓGICA DE GRÁFICOS Y CSV PARA TAMAÑO (size_log) --- (Sin cambios)
+    # --- LÓGICA DE GRÁFICOS Y CSV PARA TAMAÑO ---
     if size_log:
         grouped_sizes = {}
         for track_id, frame, area in size_log:
@@ -185,6 +204,7 @@ def detect_objects_from_video(video_path, max_detections=100):
             size_plot_path = os.path.join(log_dir, f'{video_name}_track_{track_id}_size_plot.png')
             plt.savefig(size_plot_path)
             plt.close()
+            
 
 def process_image_files(files):
     """Procesa una lista de archivos de imagen subidos."""
@@ -259,8 +279,7 @@ def video_feed(filename):
     Inicia el stream de detección de video con configuraciones por defecto.
     Ya no lee 'points' o 'max_detections' de la URL.
     """
-    # Establece valores por defecto directamente. max_detections es 2 por defecto.
-    max_detections = 2 
+    max_detections = 100
     
     video_path = os.path.join('uploads', filename)
     
