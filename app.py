@@ -34,7 +34,7 @@ MIN_PERSISTENCE_FRAMES = 70
 def detect_objects_from_video(video_path, max_detections=100):
     """
     Procesa un archivo de video con detección, tracking, registro de tamaño y movimiento relativo.
-    Incluye un filtro de persistencia temporal (MIN_PERSISTENCE_FRAMES).
+    Incluye un filtro de persistencia temporal (MIN_PERSISTENCE_FRAMES) y genera gráficas consolidadas.
     """
     global initial_coords
     global id_persistence_count
@@ -44,7 +44,6 @@ def detect_objects_from_video(video_path, max_detections=100):
     movement_log = [] 
     size_log = [] 
     
-    # Reinicia las coordenadas de origen al inicio del video
     initial_coords = {} 
     id_persistence_count = {}
 
@@ -70,9 +69,10 @@ def detect_objects_from_video(video_path, max_detections=100):
         frame = cv2.resize(frame, (1020, 600))
         
         # Usamos model.track() con IOU para NMS
-        results = model.track(frame, persist=True, iou=0.4, conf = 0.7) 
+        # conf=0.4 para ver más detecciones, iou=0.5 para eliminar duplicados
+        results = model.track(frame, persist=True, conf=0.4, iou=0.5) 
         
-        ids_in_frame = set() # Rastrea los IDs presentes en este frame
+        ids_in_frame = set() 
 
         if results[0].boxes is not None and results[0].boxes.id is not None:
             boxes_data = results[0].boxes
@@ -88,19 +88,15 @@ def detect_objects_from_video(video_path, max_detections=100):
                 class_name = names.get(class_id, "unknown").lower()
                 x1, y1, x2, y2 = box
                 
-                # --- CALCULAR CENTRO ABSOLUTO ---
                 center_x = (x1 + x2) // 2
                 center_y = (y1 + y2) // 2
                 
-                # Agregamos el ID al set de IDs actuales
                 ids_in_frame.add(track_id)
                 
                 if class_name == "physarum":
                     
-                    # --- 1. LÓGICA DE PERSISTENCIA (CONTEO) ---
                     id_persistence_count[track_id] = id_persistence_count.get(track_id, 0) + 1
                     
-                    # --- 2. REGISTRO CONDICIONAL: Solo si es persistente ---
                     if id_persistence_count[track_id] >= MIN_PERSISTENCE_FRAMES:
                         
                         # A. Lógica de Movimiento Relativo (Origen 0,0)
@@ -110,7 +106,7 @@ def detect_objects_from_video(video_path, max_detections=100):
                         origin_x, origin_y = initial_coords[track_id]
                         
                         relative_x = center_x - origin_x
-                        relative_y = -(center_y - origin_y) # Invertimos Y
+                        relative_y = -(center_y - origin_y) 
                         
                         movement_log.append((track_id, count, relative_x, relative_y))
                         
@@ -124,7 +120,6 @@ def detect_objects_from_video(video_path, max_detections=100):
                 cv2.putText(frame, f'{track_id} - {class_name}', (x1, y1 - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
 
-        # --- 3. ELIMINAR IDs que desaparecen (Reiniciar conteo) ---
         keys_to_remove = []
         for track_id in list(id_persistence_count.keys()):
             if track_id not in ids_in_frame:
@@ -143,67 +138,100 @@ def detect_objects_from_video(video_path, max_detections=100):
     cap.release()
     out.release()
     
-    # --- LÓGICA DE GRÁFICOS Y CSV PARA MOVIMIENTO ---
+    # =========================================================================
+    # --- NUEVA LÓGICA DE GRÁFICOS Y CSV CONSOLIDADOS ---
+    # =========================================================================
+    
+    # Consolidar datos para cada track_id
+    grouped_movements = {}
+    for track_id, frame, rx, ry in movement_log:
+        if track_id not in grouped_movements:
+            grouped_movements[track_id] = []
+        grouped_movements[track_id].append((frame, rx, ry))
+
+    grouped_sizes = {}
+    for track_id, frame, area in size_log:
+        if track_id not in grouped_sizes:
+            grouped_sizes[track_id] = []
+        grouped_sizes[track_id].append((frame, area))
+
+    # --- Generar CSVs consolidados ---
+    
+    # CSV de Movimiento (Todos los objetos)
     if movement_log:
-        grouped_movements = {}
-        for track_id, frame, rx, ry in movement_log:
-            if track_id not in grouped_movements:
-                grouped_movements[track_id] = []
-            grouped_movements[track_id].append((frame, rx, ry))
+        movement_csv_path = os.path.join(log_dir, f"{video_name}_all_movements.csv")
+        with open(movement_csv_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['track_id', 'frame', 'relative_x', 'relative_y'])
+            for track_id, data in grouped_movements.items():
+                for frame, rx, ry in data:
+                    writer.writerow([track_id, frame, rx, ry])
 
+    # CSV de Tamaño (Todos los objetos)
+    if size_log:
+        size_csv_path = os.path.join(log_dir, f"{video_name}_all_sizes.csv")
+        with open(size_csv_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['track_id', 'frame', 'area'])
+            for track_id, data in grouped_sizes.items():
+                for frame, area in data:
+                    writer.writerow([track_id, frame, area])
+
+    # --- Generar Gráficos consolidados ---
+    
+    # Gráfica consolidada para Desplazamiento Horizontal (Eje X)
+    if grouped_movements:
+        plt.figure(figsize=(12, 6))
         for track_id, data in grouped_movements.items():
-            track_log_path = os.path.join(log_dir, f"{video_name}_track_{track_id}_movement.csv")
-            with open(track_log_path, 'w', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow(['frame', 'relative_x', 'relative_y']) 
-                writer.writerows(data)
-
             frames = [row[0] for row in data]
             rx_vals = [row[1] for row in data]
+            plt.plot(frames, rx_vals, label=f'Physarum {track_id} (X)')
+        
+        plt.xlabel('Frame')
+        plt.ylabel('Desplazamiento Horizontal Relativo (píxeles)')
+        plt.title(f'Desplazamiento Horizontal de todos los Physarums (Origen 0,0)')
+        plt.legend(loc='best', fontsize='small') # Ubica la leyenda automáticamente
+        plt.grid(True)
+        plt.tight_layout() # Ajusta el layout para que la leyenda no se superponga
+        movement_x_plot_path = os.path.join(log_dir, f'{video_name}_all_movement_x_plot.png')
+        plt.savefig(movement_x_plot_path)
+        plt.close()
+
+    # Gráfica consolidada para Desplazamiento Vertical (Eje Y)
+    if grouped_movements:
+        plt.figure(figsize=(12, 6))
+        for track_id, data in grouped_movements.items():
+            frames = [row[0] for row in data]
             ry_vals = [row[2] for row in data]
+            plt.plot(frames, ry_vals, label=f'Physarum {track_id} (Y)')
+        
+        plt.xlabel('Frame')
+        plt.ylabel('Desplazamiento Vertical Relativo (píxeles)')
+        plt.title(f'Desplazamiento Vertical de todos los Physarums (Origen 0,0)')
+        plt.legend(loc='best', fontsize='small')
+        plt.grid(True)
+        plt.tight_layout()
+        movement_y_plot_path = os.path.join(log_dir, f'{video_name}_all_movement_y_plot.png')
+        plt.savefig(movement_y_plot_path)
+        plt.close()
 
-            plt.figure(figsize=(10, 5))
-            plt.plot(frames, rx_vals, label='Desplazamiento Horizontal (X)')
-            plt.plot(frames, ry_vals, label='Desplazamiento Vertical (Y)')
-            plt.xlabel('Frame')
-            plt.ylabel('Desplazamiento Relativo (píxeles)') 
-            plt.title(f'Movimiento Relativo del objeto ID {track_id} (Origen 0,0)')
-            plt.legend()
-            plt.grid(True)
-            
-            plot_path = os.path.join(log_dir, f'{video_name}_track_{track_id}_movement_plot.png')
-            plt.savefig(plot_path)
-            plt.close()
-
-    # --- LÓGICA DE GRÁFICOS Y CSV PARA TAMAÑO ---
-    if size_log:
-        grouped_sizes = {}
-        for track_id, frame, area in size_log:
-            if track_id not in grouped_sizes:
-                grouped_sizes[track_id] = []
-            grouped_sizes[track_id].append((frame, area))
-
+    # Gráfica consolidada para Tamaño
+    if grouped_sizes:
+        plt.figure(figsize=(12, 6))
         for track_id, data in grouped_sizes.items():
-            size_log_path = os.path.join(log_dir, f"{video_name}_track_{track_id}_size.csv")
-            with open(size_log_path, 'w', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow(['frame', 'area'])
-                writer.writerows(data)
-
             frames = [row[0] for row in data]
             areas = [row[1] for row in data]
-
-            plt.figure(figsize=(10, 5))
-            plt.plot(frames, areas, label='Área del recuadro')
-            plt.xlabel('Frame')
-            plt.ylabel('Área (píxeles)')
-            plt.title(f'Tamaño del recuadro del objeto ID {track_id}')
-            plt.legend()
-            plt.grid(True)
-
-            size_plot_path = os.path.join(log_dir, f'{video_name}_track_{track_id}_size_plot.png')
-            plt.savefig(size_plot_path)
-            plt.close()
+            plt.plot(frames, areas, label=f'Physarum {track_id} (Área)')
+        
+        plt.xlabel('Frame')
+        plt.ylabel('Área del Recuadro (píxeles)')
+        plt.title(f'Cambio de Tamaño de todos los Physarums')
+        plt.legend(loc='best', fontsize='small')
+        plt.grid(True)
+        plt.tight_layout()
+        size_plot_path = os.path.join(log_dir, f'{video_name}_all_sizes_plot.png')
+        plt.savefig(size_plot_path)
+        plt.close()
             
 
 def process_image_files(files):
