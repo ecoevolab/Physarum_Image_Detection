@@ -26,212 +26,179 @@ names = model.model.names
 # =============================================================================
 # 2. Funciones de Procesamiento de Video e Imagen
 # =============================================================================
-# Diccionario para almacenar las coordenadas iniciales de cada ID de objeto (Origen 0,0)
-initial_coords = {} 
-id_persistence_count = {} 
-MIN_PERSISTENCE_FRAMES = 70 
-
 def detect_objects_from_video(video_path, max_detections=100):
     """
-    Procesa un archivo de video con detección, tracking, registro de tamaño y movimiento relativo.
-    Incluye un filtro de persistencia temporal (MIN_PERSISTENCE_FRAMES) y genera gráficas consolidadas.
+    Procesa video con:
+    1. ROI interactivo escalado (sin distorsión).
+    2. Buffer de persistencia para recuperar frames iniciales.
+    3. Gráficas consolidadas por eje.
     """
     global initial_coords
     global id_persistence_count
     
     cap = cv2.VideoCapture(video_path)
+    
+    # --- 1. CONFIGURACIÓN DE DIMENSIONES Y ROI ---
+    original_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    ret, first_frame = cap.read()
+    if not ret:
+        print("Error al leer el video")
+        return
+
+    # Ventana de visualización para el usuario
+    display_w, display_h = 1020, 600
+    first_frame_display = cv2.resize(first_frame, (display_w, display_h))
+    
+    # Instrucciones: Seleccionar área y presionar ENTER
+    roi_selection = cv2.selectROI("Selecciona el area (ENTER para confirmar)", first_frame_display, fromCenter=False)
+    cv2.destroyWindow("Selecciona el area (ENTER para confirmar)")
+
+    x_s, y_s, w_s, h_s = roi_selection
+    
+    # Escalar coordenadas de la ventana al tamaño real del video
+    scale_x = original_width / display_w
+    scale_y = original_height / display_h
+    
+    x_roi = int(x_s * scale_x)
+    y_roi = int(y_s * scale_y)
+    w_roi = int(w_s * scale_x)
+    h_roi = int(h_s * scale_y)
+
+    # Si no hay selección, usar todo el video
+    if w_roi == 0 or h_roi == 0:
+        x_roi, y_roi, w_roi, h_roi = 0, 0, original_width, original_height
+
+    # Reiniciar video
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    
+    # --- Inicialización de variables ---
     count = 0
     movement_log = [] 
     size_log = [] 
-    
+    temp_data_buffer = {} 
     initial_coords = {} 
     id_persistence_count = {}
+    MIN_PERSISTENCE_FRAMES = 10 
 
     video_name = os.path.splitext(os.path.basename(video_path))[0]
     save_dir = os.path.join('detected_frames', video_name)
     os.makedirs(save_dir, exist_ok=True)
-    
     log_dir = 'movement_logs'
     os.makedirs(log_dir, exist_ok=True)
     
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     output_path = os.path.join(save_dir, f"{video_name}_annotated.mp4")
-    out = cv2.VideoWriter(output_path, fourcc, 20.0, (1020, 600))
+    # El video guardado tendrá el tamaño EXACTO del recorte
+    out = cv2.VideoWriter(output_path, fourcc, 20.0, (w_roi, h_roi))
 
     while cap.isOpened():
         ret, frame = cap.read()
-        if not ret:
-            break
+        if not ret: break
         count += 1
-        if count % 2 != 0:
-            continue
+        # Procesar frames pares para velocidad
+        if count % 2 != 0: continue
         
-        frame = cv2.resize(frame, (1020, 600))
+        # --- 2. APLICAR RECORTE SIN DISTORSIÓN ---
+        # Cortamos directamente del frame original
+        frame_roi = frame[y_roi : y_roi+h_roi, x_roi : x_roi+w_roi]
         
-        # Usamos model.track() con IOU para NMS
-        # conf=0.4 para ver más detecciones, iou=0.5 para eliminar duplicados
-        results = model.track(frame, persist=True, conf=0.4, iou=0.5) 
-        
+        # YOLO analiza el recorte puro
+        results = model.track(frame_roi, persist=True, conf=0.5, iou=0.6) 
         ids_in_frame = set() 
 
         if results[0].boxes is not None and results[0].boxes.id is not None:
             boxes_data = results[0].boxes
-            
-            sorted_indices = boxes_data.conf.argsort(descending=True)
-            final_indices = sorted_indices
-            
-            boxes = boxes_data.xyxy[final_indices].int().cpu().tolist()
-            class_ids = boxes_data.cls[final_indices].int().cpu().tolist()
-            track_ids = boxes_data.id[final_indices].int().cpu().tolist()
+            track_ids = boxes_data.id.int().cpu().tolist()
+            boxes = boxes_data.xyxy.int().cpu().tolist()
+            class_ids = boxes_data.cls.int().cpu().tolist()
             
             for box, class_id, track_id in zip(boxes, class_ids, track_ids):
                 class_name = names.get(class_id, "unknown").lower()
-                x1, y1, x2, y2 = box
-                
-                center_x = (x1 + x2) // 2
-                center_y = (y1 + y2) // 2
-                
                 ids_in_frame.add(track_id)
                 
                 if class_name == "physarum":
+                    x1, y1, x2, y2 = box
+                    center_x, center_y = (x1 + x2) // 2, (y1 + y2) // 2
                     
                     id_persistence_count[track_id] = id_persistence_count.get(track_id, 0) + 1
                     
-                    if id_persistence_count[track_id] >= MIN_PERSISTENCE_FRAMES:
-                        
-                        # A. Lógica de Movimiento Relativo (Origen 0,0)
-                        if track_id not in initial_coords:
-                            initial_coords[track_id] = (center_x, center_y)
-                        
-                        origin_x, origin_y = initial_coords[track_id]
-                        
-                        relative_x = center_x - origin_x
-                        relative_y = -(center_y - origin_y) 
-                        
-                        movement_log.append((track_id, count, relative_x, relative_y))
-                        
-                        # B. Lógica de Tamaño
-                        width = x2 - x1
-                        height = y2 - y1
-                        area = width * height
+                    if track_id not in initial_coords:
+                        initial_coords[track_id] = (center_x, center_y)
+                    
+                    orig_x, orig_y = initial_coords[track_id]
+                    rx, ry = center_x - orig_x, -(center_y - orig_y)
+                    area = (x2 - x1) * (y2 - y1)
+
+                    # --- 3. LÓGICA DE BUFFER Y PERSISTENCIA ---
+                    if id_persistence_count[track_id] < MIN_PERSISTENCE_FRAMES:
+                        if track_id not in temp_data_buffer:
+                            temp_data_buffer[track_id] = []
+                        temp_data_buffer[track_id].append([count, rx, ry, area])
+                    
+                    elif id_persistence_count[track_id] == MIN_PERSISTENCE_FRAMES:
+                        if track_id in temp_data_buffer:
+                            for old_f, old_rx, old_ry, old_a in temp_data_buffer[track_id]:
+                                movement_log.append((track_id, old_f, old_rx, old_ry))
+                                size_log.append((track_id, old_f, old_a))
+                            del temp_data_buffer[track_id]
+                        movement_log.append((track_id, count, rx, ry))
                         size_log.append((track_id, count, area))
-                        
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(frame, f'{track_id} - {class_name}', (x1, y1 - 10),
+                    else:
+                        movement_log.append((track_id, count, rx, ry))
+                        size_log.append((track_id, count, area))
+
+                # Dibujo etiquetas
+                cv2.rectangle(frame_roi, (box[0], box[1]), (box[2], box[3]), (0, 255, 0), 2)
+                cv2.putText(frame_roi, f'ID:{track_id}', (box[0], box[1]-10), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
 
-        keys_to_remove = []
-        for track_id in list(id_persistence_count.keys()):
-            if track_id not in ids_in_frame:
-                keys_to_remove.append(track_id)
-                
-        for track_id in keys_to_remove:
-            del id_persistence_count[track_id]
-            
-        out.write(frame)
-        _, buffer = cv2.imencode('.jpg', frame)
-        frame_bytes = buffer.tobytes()
+        # Limpiar IDs perdidos
+        for tid in list(id_persistence_count.keys()):
+            if tid not in ids_in_frame:
+                del id_persistence_count[tid]
+                if tid in temp_data_buffer: del temp_data_buffer[tid]
 
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+        out.write(frame_roi)
+        _, buffer = cv2.imencode('.jpg', frame_roi)
+        yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
     
     cap.release()
     out.release()
     
-    # =========================================================================
-    # --- NUEVA LÓGICA DE GRÁFICOS Y CSV CONSOLIDADOS ---
-    # =========================================================================
-    
-    # Consolidar datos para cada track_id
-    grouped_movements = {}
-    for track_id, frame, rx, ry in movement_log:
-        if track_id not in grouped_movements:
-            grouped_movements[track_id] = []
-        grouped_movements[track_id].append((frame, rx, ry))
-
-    grouped_sizes = {}
-    for track_id, frame, area in size_log:
-        if track_id not in grouped_sizes:
-            grouped_sizes[track_id] = []
-        grouped_sizes[track_id].append((frame, area))
-
-    # --- Generar CSVs consolidados ---
-    
-    # CSV de Movimiento (Todos los objetos)
+    # --- 4. GRÁFICAS CONSOLIDADAS ---
     if movement_log:
-        movement_csv_path = os.path.join(log_dir, f"{video_name}_all_movements.csv")
-        with open(movement_csv_path, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(['track_id', 'frame', 'relative_x', 'relative_y'])
-            for track_id, data in grouped_movements.items():
-                for frame, rx, ry in data:
-                    writer.writerow([track_id, frame, rx, ry])
+        grouped = {}
+        for tid, f, rx, ry in movement_log:
+            if tid not in grouped: grouped[tid] = []
+            grouped[tid].append((f, rx, ry))
+        
+        # Gráfica X
+        plt.figure(figsize=(10, 5))
+        for tid, data in grouped.items():
+            plt.plot([d[0] for d in data], [d[1] for d in data], label=f'ID {tid}')
+        plt.title('Movimiento X'); plt.legend(); plt.grid(True)
+        plt.savefig(os.path.join(log_dir, f'{video_name}_x.png')); plt.close()
 
-    # CSV de Tamaño (Todos los objetos)
+        # Gráfica Y
+        plt.figure(figsize=(10, 5))
+        for tid, data in grouped.items():
+            plt.plot([d[0] for d in data], [d[2] for d in data], label=f'ID {tid}')
+        plt.title('Movimiento Y'); plt.legend(); plt.grid(True)
+        plt.savefig(os.path.join(log_dir, f'{video_name}_y.png')); plt.close()
+
     if size_log:
-        size_csv_path = os.path.join(log_dir, f"{video_name}_all_sizes.csv")
-        with open(size_csv_path, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(['track_id', 'frame', 'area'])
-            for track_id, data in grouped_sizes.items():
-                for frame, area in data:
-                    writer.writerow([track_id, frame, area])
-
-    # --- Generar Gráficos consolidados ---
-    
-    # Gráfica consolidada para Desplazamiento Horizontal (Eje X)
-    if grouped_movements:
-        plt.figure(figsize=(12, 6))
-        for track_id, data in grouped_movements.items():
-            frames = [row[0] for row in data]
-            rx_vals = [row[1] for row in data]
-            plt.plot(frames, rx_vals, label=f'Physarum {track_id} (X)')
+        grouped_s = {}
+        for tid, f, a in size_log:
+            if tid not in grouped_s: grouped_s[tid] = []
+            grouped_s[tid].append((f, a))
         
-        plt.xlabel('Frame')
-        plt.ylabel('Desplazamiento Horizontal Relativo (píxeles)')
-        plt.title(f'Desplazamiento Horizontal de todos los Physarums (Origen 0,0)')
-        plt.legend(loc='best', fontsize='small') # Ubica la leyenda automáticamente
-        plt.grid(True)
-        plt.tight_layout() # Ajusta el layout para que la leyenda no se superponga
-        movement_x_plot_path = os.path.join(log_dir, f'{video_name}_all_movement_x_plot.png')
-        plt.savefig(movement_x_plot_path)
-        plt.close()
-
-    # Gráfica consolidada para Desplazamiento Vertical (Eje Y)
-    if grouped_movements:
-        plt.figure(figsize=(12, 6))
-        for track_id, data in grouped_movements.items():
-            frames = [row[0] for row in data]
-            ry_vals = [row[2] for row in data]
-            plt.plot(frames, ry_vals, label=f'Physarum {track_id} (Y)')
-        
-        plt.xlabel('Frame')
-        plt.ylabel('Desplazamiento Vertical Relativo (píxeles)')
-        plt.title(f'Desplazamiento Vertical de todos los Physarums (Origen 0,0)')
-        plt.legend(loc='best', fontsize='small')
-        plt.grid(True)
-        plt.tight_layout()
-        movement_y_plot_path = os.path.join(log_dir, f'{video_name}_all_movement_y_plot.png')
-        plt.savefig(movement_y_plot_path)
-        plt.close()
-
-    # Gráfica consolidada para Tamaño
-    if grouped_sizes:
-        plt.figure(figsize=(12, 6))
-        for track_id, data in grouped_sizes.items():
-            frames = [row[0] for row in data]
-            areas = [row[1] for row in data]
-            plt.plot(frames, areas, label=f'Physarum {track_id} (Área)')
-        
-        plt.xlabel('Frame')
-        plt.ylabel('Área del Recuadro (píxeles)')
-        plt.title(f'Cambio de Tamaño de todos los Physarums')
-        plt.legend(loc='best', fontsize='small')
-        plt.grid(True)
-        plt.tight_layout()
-        size_plot_path = os.path.join(log_dir, f'{video_name}_all_sizes_plot.png')
-        plt.savefig(size_plot_path)
-        plt.close()
+        plt.figure(figsize=(10, 5))
+        for tid, data in grouped_s.items():
+            plt.plot([d[0] for d in data], [d[1] for d in data], label=f'ID {tid}')
+        plt.title('Área'); plt.legend(); plt.grid(True)
+        plt.savefig(os.path.join(log_dir, f'{video_name}_area.png')); plt.close()
             
 
 def process_image_files(files):
