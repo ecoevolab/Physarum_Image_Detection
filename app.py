@@ -1,45 +1,65 @@
 import matplotlib
-# CRITICAL: Use the 'Agg' backend to avoid GUI conflicts in Flask's background thread
-matplotlib.use('Agg') 
-# =============================================================================
+matplotlib.use('Agg')
+
 import os
 import cv2
 import numpy as np
 from flask import (
     Flask, render_template, Response, request,
-    redirect, url_for, send_from_directory, session, jsonify
+    redirect, url_for, send_from_directory, jsonify
 )
 from ultralytics import YOLO
 import csv
-import matplotlib.pyplot as plt 
+import matplotlib.pyplot as plt
+import math
 
 # =============================================================================
-# 1. Configuración de la Aplicación y Carga del Modelo
+# 1. Configuración
 # =============================================================================
 app = Flask(__name__)
-app.secret_key = '777' 
+app.secret_key = '777'
 
-# Carga el modelo YOLOv11
-model = YOLO("yolo11_custom_3.pt")
+model = YOLO("yolo11_custom_4.pt")  # <-- tu modelo de detection original
 names = model.model.names
 
 # =============================================================================
-# 2. Funciones de Procesamiento de Video e Imagen
+# 2. Utilidades de dirección
 # =============================================================================
+
+def classify_direction(dx, dy, threshold=10):
+    dist = math.sqrt(dx**2 + dy**2)
+    if dist < threshold:
+        return "Estatico", dist
+    angle = math.degrees(math.atan2(dy, dx))
+    if -22.5 <= angle < 22.5:                  return "Derecha", dist
+    elif 22.5 <= angle < 67.5:                 return "Arriba-Der", dist
+    elif 67.5 <= angle < 112.5:                return "Arriba", dist
+    elif 112.5 <= angle < 157.5:               return "Arriba-Izq", dist
+    elif angle >= 157.5 or angle < -157.5:     return "Izquierda", dist
+    elif -157.5 <= angle < -112.5:             return "Abajo-Izq", dist
+    elif -112.5 <= angle < -67.5:              return "Abajo", dist
+    else:                                      return "Abajo-Der", dist
+
+
+def draw_direction_arrow(frame, origin, current, track_id, direction_label):
+    if origin is None or current is None:
+        return
+    ox, oy = origin
+    cx, cy = current
+    if math.sqrt((cx-ox)**2 + (cy-oy)**2) < 5:
+        return
+    cv2.arrowedLine(frame, (ox, oy), (cx, cy), (0, 200, 255), 2, tipLength=0.3)
+    cv2.putText(frame, f"ID{track_id}: {direction_label}",
+                (cx + 5, cy - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 200, 255), 1)
+
+
+# =============================================================================
+# 3. Procesamiento de video
+# =============================================================================
+
 def detect_objects_from_video(video_path, max_detections=100):
-    """
-    Procesa video con:
-    1. ROI interactivo escalado (sin distorsión).
-    2. Buffer de persistencia para recuperar frames iniciales.
-    3. Gráficas consolidadas por eje.
-    """
-    global initial_coords
-    global id_persistence_count
-    
     cap = cv2.VideoCapture(video_path)
-    
-    # --- 1. CONFIGURACIÓN DE DIMENSIONES Y ROI ---
-    original_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    original_width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
     ret, first_frame = cap.read()
@@ -47,207 +67,247 @@ def detect_objects_from_video(video_path, max_detections=100):
         print("Error al leer el video")
         return
 
-    # Ventana de visualización para el usuario
     display_w, display_h = 1020, 600
     first_frame_display = cv2.resize(first_frame, (display_w, display_h))
-    
-    # Instrucciones: Seleccionar área y presionar ENTER
-    roi_selection = cv2.selectROI("Selecciona el area (ENTER para confirmar)", first_frame_display, fromCenter=False)
+    roi_selection = cv2.selectROI(
+        "Selecciona el area (ENTER para confirmar)", first_frame_display, fromCenter=False
+    )
     cv2.destroyWindow("Selecciona el area (ENTER para confirmar)")
 
     x_s, y_s, w_s, h_s = roi_selection
-    
-    # Escalar coordenadas de la ventana al tamaño real del video
-    scale_x = original_width / display_w
+    scale_x = original_width  / display_w
     scale_y = original_height / display_h
-    
-    x_roi = int(x_s * scale_x)
-    y_roi = int(y_s * scale_y)
-    w_roi = int(w_s * scale_x)
-    h_roi = int(h_s * scale_y)
-
-    # Si no hay selección, usar todo el video
+    x_roi = int(x_s * scale_x); y_roi = int(y_s * scale_y)
+    w_roi = int(w_s * scale_x); h_roi = int(h_s * scale_y)
     if w_roi == 0 or h_roi == 0:
         x_roi, y_roi, w_roi, h_roi = 0, 0, original_width, original_height
 
-    # Reiniciar video
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-    
-    # --- Inicialización de variables ---
-    count = 0
-    movement_log = [] 
-    size_log = [] 
-    temp_data_buffer = {} 
-    initial_coords = {} 
-    id_persistence_count = {}
-    MIN_PERSISTENCE_FRAMES = 10 
 
-    video_name = os.path.splitext(os.path.basename(video_path))[0]
-    save_dir = os.path.join('detected_frames', video_name)
+    initial_coords  = {}
+    last_coords     = {}
+    id_persistence  = {}
+    id_grace        = {}
+    GRACE_PERIOD    = 15
+    MIN_PERSISTENCE = 10
+
+    movement_log = []
+    area_log     = []
+
+    video_name  = os.path.splitext(os.path.basename(video_path))[0]
+    save_dir    = os.path.join('detected_frames', video_name)
     os.makedirs(save_dir, exist_ok=True)
-    log_dir = 'movement_logs'
+    log_dir     = 'movement_logs'
     os.makedirs(log_dir, exist_ok=True)
-    
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+
+    fourcc      = cv2.VideoWriter_fourcc(*'mp4v')
     output_path = os.path.join(save_dir, f"{video_name}_annotated.mp4")
-    # El video guardado tendrá el tamaño EXACTO del recorte
-    out = cv2.VideoWriter(output_path, fourcc, 20.0, (w_roi, h_roi))
+    out         = cv2.VideoWriter(output_path, fourcc, 20.0, (w_roi, h_roi))
+
+    frame_count = 0
 
     while cap.isOpened():
         ret, frame = cap.read()
-        if not ret: break
-        count += 1
-        # Procesar frames pares para velocidad
-        if count % 2 != 0: continue
-        
-        # --- 2. APLICAR RECORTE SIN DISTORSIÓN ---
-        # Cortamos directamente del frame original
-        frame_roi = frame[y_roi : y_roi+h_roi, x_roi : x_roi+w_roi]
-        
-        # YOLO analiza el recorte puro
-        results = model.track(frame_roi, persist=True, conf=0.5, iou=0.6) 
-        ids_in_frame = set() 
+        if not ret:
+            break
+        frame_count += 1
 
-        if results[0].boxes is not None and results[0].boxes.id is not None:
-            boxes_data = results[0].boxes
-            track_ids = boxes_data.id.int().cpu().tolist()
-            boxes = boxes_data.xyxy.int().cpu().tolist()
-            class_ids = boxes_data.cls.int().cpu().tolist()
-            
+        frame_roi = frame[y_roi:y_roi+h_roi, x_roi:x_roi+w_roi]
+        results = model.track(frame_roi, persist=True, conf=0.4, iou=0.3)
+
+        ids_seen_this_frame = set()
+
+        res = results[0]
+        if res.boxes is not None and res.boxes.id is not None:
+            track_ids = res.boxes.id.int().cpu().tolist()
+            boxes     = res.boxes.xyxy.int().cpu().tolist()
+            class_ids = res.boxes.cls.int().cpu().tolist()
+
             for box, class_id, track_id in zip(boxes, class_ids, track_ids):
                 class_name = names.get(class_id, "unknown").lower()
-                ids_in_frame.add(track_id)
-                
-                if class_name == "physarum":
-                    x1, y1, x2, y2 = box
-                    center_x, center_y = (x1 + x2) // 2, (y1 + y2) // 2
-                    
-                    id_persistence_count[track_id] = id_persistence_count.get(track_id, 0) + 1
-                    
-                    if track_id not in initial_coords:
-                        initial_coords[track_id] = (center_x, center_y)
-                    
-                    orig_x, orig_y = initial_coords[track_id]
-                    rx, ry = center_x - orig_x, -(center_y - orig_y)
-                    area = (x2 - x1) * (y2 - y1)
+                if class_name != "physarum":
+                    continue
 
-                    # --- 3. LÓGICA DE BUFFER Y PERSISTENCIA ---
-                    if id_persistence_count[track_id] < MIN_PERSISTENCE_FRAMES:
-                        if track_id not in temp_data_buffer:
-                            temp_data_buffer[track_id] = []
-                        temp_data_buffer[track_id].append([count, rx, ry, area])
-                    
-                    elif id_persistence_count[track_id] == MIN_PERSISTENCE_FRAMES:
-                        if track_id in temp_data_buffer:
-                            for old_f, old_rx, old_ry, old_a in temp_data_buffer[track_id]:
-                                movement_log.append((track_id, old_f, old_rx, old_ry))
-                                size_log.append((track_id, old_f, old_a))
-                            del temp_data_buffer[track_id]
-                        movement_log.append((track_id, count, rx, ry))
-                        size_log.append((track_id, count, area))
-                    else:
-                        movement_log.append((track_id, count, rx, ry))
-                        size_log.append((track_id, count, area))
+                ids_seen_this_frame.add(track_id)
 
-                # Dibujo etiquetas
-                cv2.rectangle(frame_roi, (box[0], box[1]), (box[2], box[3]), (0, 255, 0), 2)
-                cv2.putText(frame_roi, f'ID:{track_id}', (box[0], box[1]-10), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
+                x1, y1, x2, y2 = box
+                cx = (x1 + x2) // 2
+                cy = (y1 + y2) // 2
+                area_px = (x2 - x1) * (y2 - y1)
 
-        # Limpiar IDs perdidos
-        for tid in list(id_persistence_count.keys()):
-            if tid not in ids_in_frame:
-                del id_persistence_count[tid]
-                if tid in temp_data_buffer: del temp_data_buffer[tid]
+                if track_id not in initial_coords:
+                    initial_coords[track_id] = (cx, cy)
+                    id_persistence[track_id] = 0
+
+                id_grace[track_id]    = 0
+                last_coords[track_id] = (cx, cy)
+                id_persistence[track_id] = id_persistence.get(track_id, 0) + 1
+
+                ox, oy = initial_coords[track_id]
+                dx     = cx - ox
+                dy     = -(cy - oy)
+                direction, dist = classify_direction(dx, dy)
+
+                if id_persistence[track_id] >= MIN_PERSISTENCE:
+                    movement_log.append((track_id, frame_count, dx, dy, direction, round(dist, 1)))
+                    area_log.append((track_id, frame_count, area_px))
+
+                cv2.rectangle(frame_roi, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.circle(frame_roi, (cx, cy), 4, (255, 255, 0), -1)
+                cv2.putText(frame_roi, f'ID:{track_id}', (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 1)
+                cv2.putText(frame_roi, f'A:{area_px}px', (x1, y2 + 15),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 0), 1)
+                draw_direction_arrow(frame_roi, initial_coords[track_id], (cx, cy),
+                                     track_id, direction)
+
+        # Grace period
+        for tid in list(id_grace.keys()):
+            if tid not in ids_seen_this_frame:
+                id_grace[tid] = id_grace.get(tid, 0) + 1
+                if id_grace[tid] > GRACE_PERIOD:
+                    for d in [initial_coords, last_coords, id_persistence, id_grace]:
+                        d.pop(tid, None)
 
         out.write(frame_roi)
         _, buffer = cv2.imencode('.jpg', frame_roi)
-        yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-    
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+
     cap.release()
     out.release()
-    
-    # --- 4. GRÁFICAS CONSOLIDADAS ---
+
+    # --- CSVs ---
+    with open(os.path.join(log_dir, f'{video_name}_movement.csv'), 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(['track_id', 'frame', 'dx', 'dy', 'direction', 'distance_px'])
+        writer.writerows(movement_log)
+
+    with open(os.path.join(log_dir, f'{video_name}_area.csv'), 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['track_id', 'frame', 'area_px'])
+        writer.writerows(area_log)
+
+    # --- Gráficas ---
     if movement_log:
         grouped = {}
-        for tid, f, rx, ry in movement_log:
-            if tid not in grouped: grouped[tid] = []
-            grouped[tid].append((f, rx, ry))
-        
-        # Gráfica X
-        plt.figure(figsize=(10, 5))
-        for tid, data in grouped.items():
-            plt.plot([d[0] for d in data], [d[1] for d in data], label=f'ID {tid}')
-        plt.title('Movimiento X'); plt.legend(); plt.grid(True)
-        plt.savefig(os.path.join(log_dir, f'{video_name}_x.png')); plt.close()
+        for tid, fr, dx, dy, direction, dist in movement_log:
+            if tid not in grouped:
+                grouped[tid] = {'frames': [], 'dx': [], 'dy': [], 'dist': [], 'dirs': []}
+            grouped[tid]['frames'].append(fr)
+            grouped[tid]['dx'].append(dx)
+            grouped[tid]['dy'].append(dy)
+            grouped[tid]['dist'].append(dist)
+            grouped[tid]['dirs'].append(direction)
 
-        # Gráfica Y
-        plt.figure(figsize=(10, 5))
+        fig, ax = plt.subplots(figsize=(8, 8))
+        ax.set_facecolor('#1a1a2e'); fig.patch.set_facecolor('#1a1a2e')
         for tid, data in grouped.items():
-            plt.plot([d[0] for d in data], [d[2] for d in data], label=f'ID {tid}')
-        plt.title('Movimiento Y'); plt.legend(); plt.grid(True)
-        plt.savefig(os.path.join(log_dir, f'{video_name}_y.png')); plt.close()
+            xs, ys = data['dx'], data['dy']
+            ax.plot(xs, ys, linewidth=1.5, alpha=0.8, label=f'ID {tid}')
+            ax.scatter([xs[0]], [ys[0]], marker='o', s=60, zorder=5)
+            ax.scatter([xs[-1]], [ys[-1]], marker='*', s=120, zorder=5)
+        ax.axhline(0, color='white', linewidth=0.5, alpha=0.4)
+        ax.axvline(0, color='white', linewidth=0.5, alpha=0.4)
+        ax.set_title('Trayectoria 2D (desde punto inicial)', color='white', fontsize=13)
+        ax.set_xlabel('Δx (px, + = derecha)', color='white')
+        ax.set_ylabel('Δy (px, + = arriba)', color='white')
+        ax.tick_params(colors='white')
+        ax.legend(facecolor='#2a2a4e', labelcolor='white', fontsize=8)
+        plt.tight_layout()
+        plt.savefig(os.path.join(log_dir, f'{video_name}_trajectory2D.png'), dpi=150)
+        plt.close()
 
-    if size_log:
-        grouped_s = {}
-        for tid, f, a in size_log:
-            if tid not in grouped_s: grouped_s[tid] = []
-            grouped_s[tid].append((f, a))
-        
-        plt.figure(figsize=(10, 5))
-        for tid, data in grouped_s.items():
-            plt.plot([d[0] for d in data], [d[1] for d in data], label=f'ID {tid}')
-        plt.title('Área'); plt.legend(); plt.grid(True)
-        plt.savefig(os.path.join(log_dir, f'{video_name}_area.png')); plt.close()
-            
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.set_facecolor('#1a1a2e'); fig.patch.set_facecolor('#1a1a2e')
+        for tid, data in grouped.items():
+            ax.plot(data['frames'], data['dist'], linewidth=1.5, label=f'ID {tid}')
+        ax.set_title('Distancia al punto inicial vs Frame', color='white')
+        ax.set_xlabel('Frame', color='white'); ax.set_ylabel('Distancia (px)', color='white')
+        ax.tick_params(colors='white')
+        ax.legend(facecolor='#2a2a4e', labelcolor='white', fontsize=8)
+        plt.tight_layout()
+        plt.savefig(os.path.join(log_dir, f'{video_name}_distance.png'), dpi=150)
+        plt.close()
+
+        all_dirs = [d for data in grouped.values() for d in data['dirs']]
+        dir_counts = {}
+        for d in all_dirs:
+            dir_counts[d] = dir_counts.get(d, 0) + 1
+        if dir_counts:
+            fig, ax = plt.subplots(figsize=(6, 6))
+            ax.set_facecolor('#1a1a2e'); fig.patch.set_facecolor('#1a1a2e')
+            labels = list(dir_counts.keys())
+            values = list(dir_counts.values())
+            colors = plt.cm.plasma(np.linspace(0.2, 0.9, len(labels)))
+            wedges, texts, autotexts = ax.pie(values, labels=labels, autopct='%1.1f%%',
+                                               colors=colors, startangle=90)
+            for t in texts + autotexts:
+                t.set_color('white')
+            ax.set_title('Distribución de direcciones', color='white', fontsize=13)
+            plt.tight_layout()
+            plt.savefig(os.path.join(log_dir, f'{video_name}_directions.png'), dpi=150)
+            plt.close()
+
+    if area_log:
+        grouped_a = {}
+        for tid, fr, area in area_log:
+            if tid not in grouped_a:
+                grouped_a[tid] = {'frames': [], 'areas': []}
+            grouped_a[tid]['frames'].append(fr)
+            grouped_a[tid]['areas'].append(area)
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.set_facecolor('#1a1a2e'); fig.patch.set_facecolor('#1a1a2e')
+        for tid, data in grouped_a.items():
+            ax.plot(data['frames'], data['areas'], linewidth=1.5, label=f'ID {tid}')
+        ax.set_title('Área aproximada (px²) vs Frame', color='white')
+        ax.set_xlabel('Frame', color='white'); ax.set_ylabel('Área (px²)', color='white')
+        ax.tick_params(colors='white')
+        ax.legend(facecolor='#2a2a4e', labelcolor='white', fontsize=8)
+        plt.tight_layout()
+        plt.savefig(os.path.join(log_dir, f'{video_name}_area.png'), dpi=150)
+        plt.close()
+
+
+# =============================================================================
+# 4. Procesamiento de imágenes
+# =============================================================================
 
 def process_image_files(files):
-    """Procesa una lista de archivos de imagen subidos."""
     processed_filenames = []
-    if not os.path.exists('uploads'):
-        os.makedirs('uploads')
-
+    os.makedirs('uploads', exist_ok=True)
     for file in files:
         if file.filename == '':
             continue
-        
         image_path = os.path.join('uploads', file.filename)
         file.save(image_path)
-        
         frame = cv2.imread(image_path)
         frame = cv2.resize(frame, (1020, 600))
-        results = model.track(frame, persist=True, tracker = "botsort.yaml")
-
-        if results[0].boxes is not None and results[0].boxes.id is not None:
-            boxes = results[0].boxes.xyxy.int().cpu().tolist()
-            class_ids = results[0].boxes.cls.int().cpu().tolist()
-            track_ids = results[0].boxes.id.int().cpu().tolist()
-
+        results = model.track(frame, persist=True, tracker="botsort.yaml")
+        res = results[0]
+        if res.boxes is not None and res.boxes.id is not None:
+            track_ids = res.boxes.id.int().cpu().tolist()
+            boxes     = res.boxes.xyxy.int().cpu().tolist()
+            class_ids = res.boxes.cls.int().cpu().tolist()
             for box, class_id, track_id in zip(boxes, class_ids, track_ids):
                 c = names[class_id]
                 x1, y1, x2, y2 = box
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(frame, f'{track_id} - {c}', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
-
+                cv2.putText(frame, f'{track_id} - {c}',
+                            (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
         processed_filename = f"processed_{file.filename}"
-        processed_path = os.path.join('uploads', processed_filename)
-        cv2.imwrite(processed_path, frame)
+        cv2.imwrite(os.path.join('uploads', processed_filename), frame)
         processed_filenames.append(processed_filename)
-    
     return processed_filenames
 
+
 # =============================================================================
-# 3. Rutas de la Aplicación
+# 5. Rutas Flask
 # =============================================================================
 
-### Rutas principales y de navegación
 @app.route('/')
 def index():
     return render_template('index.html')
-
-@app.route('/start_webcam')
-def start_webcam():
-    return render_template('webcam.html')
 
 @app.route('/upload_video_form')
 def upload_video_form():
@@ -261,26 +321,11 @@ def upload_image():
         return render_template('show_image.html', filenames=processed_filenames)
     return render_template('upload_image.html')
 
-
-### Rutas para streams de video y archivos estáticos
-@app.route('/webcam_feed')
-def webcam_feed():
-    return Response(detect_objects_from_webcam(),
-                    mimetype='multipart/x-mixed-replace; boundary=frame')
-
 @app.route('/video_feed/<filename>')
 def video_feed(filename):
-    """
-    Inicia el stream de detección de video con configuraciones por defecto.
-    Ya no lee 'points' o 'max_detections' de la URL.
-    """
-    max_detections = 100
-    
     video_path = os.path.join('uploads', filename)
-    
-    # 3. La función detect_objects_from_video ahora recibe el único parámetro necesario
     return Response(
-        detect_objects_from_video(video_path, max_detections),
+        detect_objects_from_video(video_path),
         mimetype='multipart/x-mixed-replace; boundary=frame'
     )
 
@@ -295,56 +340,33 @@ def send_video(filename):
 @app.route('/annotated_video/<filename>')
 def send_annotated_video(filename):
     video_name = os.path.splitext(filename)[0]
-    annotated_video_path = os.path.join('detected_frames', video_name, f"{video_name}_annotated.mp4")
-    if os.path.exists(annotated_video_path):
-        return send_from_directory(os.path.dirname(annotated_video_path), os.path.basename(annotated_video_path))
-    else:
-        return "Video anotado no encontrado", 404
-
-### Rutas de API para manejo de datos
-
-# ... (código anterior) ...
-
-### Rutas de API para manejo de datos
+    path = os.path.join('detected_frames', video_name, f"{video_name}_annotated.mp4")
+    if os.path.exists(path):
+        return send_from_directory(os.path.dirname(path), os.path.basename(path))
+    return "Video anotado no encontrado", 404
 
 @app.route('/upload', methods=['POST'])
 def upload_video():
     if 'file' not in request.files:
         return redirect(request.url)
-    
     file = request.files['file']
     if file.filename == '':
         return redirect(request.url)
-
-    if not os.path.exists('uploads'):
-        os.makedirs('uploads')
-    
-    file_path = os.path.join('uploads', file.filename)
-    file.save(file_path)
-
-    # --- LÍNEA CORREGIDA ---
-    # Redirige directamente a la página de reproducción del video.
+    os.makedirs('uploads', exist_ok=True)
+    file.save(os.path.join('uploads', file.filename))
     return redirect(url_for('play_video', filename=file.filename))
-
-# ELIMINAR: def get_video_dimensions(video_path):
-
-# ELIMINAR: @app.route('/set_point_page/<filename>')
-# def set_point_page(filename):
-#     # Esta ruta ya no tiene sentido
-#     return redirect(url_for('play_video', filename=filename)) 
-
-# ELIMINAR: @app.route('/get_first_frame/<filename>')
-# def get_first_frame(filename):
-#     # Esta ruta ya no tiene sentido
-#     return # ... (código anterior)
 
 @app.route('/upload_video/<filename>')
 def play_video(filename):
     return render_template('play_video.html', filename=filename)
 
+@app.route('/movement_logs/<filename>')
+def serve_log_file(filename):
+    return send_from_directory('movement_logs', filename)
+
 
 # =============================================================================
-# 4. Ejecución del Servidor
+# 6. Ejecución
 # =============================================================================
 if __name__ == '__main__':
     app.run('0.0.0.0', debug=False, port=8080)
