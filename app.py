@@ -120,6 +120,9 @@ def resolver_nuevo_id(yolo_id, cx, cy, box_nuevo,
             continue
         if canon_label not in last_boxes:
             continue
+        # Bloquear hijos de generar nietos — jerarquia maxima 1 nivel
+        if '.' in canon_label:
+            continue
         overlap = porcentaje_dentro(box_nuevo, last_boxes[canon_label])
         if overlap > SPLIT_OVERLAP_RATIO and overlap > mejor_overlap:
             mejor_overlap      = overlap
@@ -340,6 +343,161 @@ def grafica_area(grouped_a, video_name, log_dir):
     _plot_save(fig, ax, 'Area aproximada (px2) vs Frame',
                'Frame', 'Area (px2)', video_name, 'area', log_dir)
 
+def generar_tabla_resumen(movement_log, area_log, video_name, log_dir):
+    if not movement_log:
+        return
+
+    df_mov  = pd.DataFrame(movement_log,
+                           columns=['track_id','frame','dx','dy','direction','distance_px'])
+    df_area = pd.DataFrame(area_log,
+                           columns=['track_id','frame','area_px','w','h'])
+
+    df_exc = calcular_excentricidad(df_area)
+    df_vel = calcular_velocidad(df_mov)
+    df_ang = calcular_angulo(df_mov)
+
+    # Construir info basica por ID
+    info = {}
+    for tid in df_mov['track_id'].unique():
+        mov_tid  = df_mov[df_mov['track_id'] == tid].sort_values('frame')
+        area_tid = df_area[df_area['track_id'] == tid].sort_values('frame')
+        vel_tid  = df_vel[df_vel['track_id'] == tid].sort_values('frame') if not df_vel.empty else pd.DataFrame()
+        exc_tid  = df_exc[df_exc['track_id'] == tid].sort_values('frame') if df_exc is not None else pd.DataFrame()
+        ang_tid  = df_ang[df_ang['track_id'] == tid].sort_values('frame')
+
+        info[tid] = {
+            'frame_inicio':  int(mov_tid.iloc[0]['frame']),
+            'frame_final':   int(mov_tid.iloc[-1]['frame']),
+            'total_frames':  len(mov_tid),
+            'ultimo_mov':    mov_tid.iloc[-1],
+            'ultimo_area':   area_tid.iloc[-1] if not area_tid.empty else None,
+            'ultimo_vel':    vel_tid.iloc[-1]['velocidad'] if not vel_tid.empty else None,
+            'ultimo_exc':    exc_tid.iloc[-1]['excentricidad'] if not exc_tid.empty else None,
+            'ultimo_ang':    ang_tid.iloc[-1]['angulo'] if not ang_tid.empty else None,
+        }
+
+    ids = list(info.keys())
+
+    # Puntos inicial y final de cada ID para calcular distancia
+    primeros_puntos = {}
+    ultimos_puntos  = {}
+    for tid in ids:
+        mov_tid = df_mov[df_mov['track_id'] == tid].sort_values('frame')
+        primeros_puntos[tid] = (float(mov_tid.iloc[0]['dx']),  float(mov_tid.iloc[0]['dy']))
+        ultimos_puntos[tid]  = (float(mov_tid.iloc[-1]['dx']), float(mov_tid.iloc[-1]['dy']))
+
+    # Detectar posibles continuaciones por tiempo Y distancia
+    FRAME_THRESHOLD = 30
+    DIST_THRESHOLD  = 50
+
+    posible_continuacion = {}
+    for tid_a in ids:
+        frame_final_a = info[tid_a]['frame_final']
+        ux_a, uy_a   = ultimos_puntos[tid_a]
+        candidatos    = []
+
+        for tid_b in ids:
+            if tid_b == tid_a:
+                continue
+            frame_inicio_b = info[tid_b]['frame_inicio']
+            diff = frame_inicio_b - frame_final_a
+            if not (0 < diff <= FRAME_THRESHOLD):
+                continue
+            px_b, py_b = primeros_puntos[tid_b]
+            dist = math.sqrt((px_b - ux_a)**2 + (py_b - uy_a)**2)
+            if dist <= DIST_THRESHOLD:
+                candidatos.append((diff, dist, tid_b))
+
+        if candidatos:
+            candidatos.sort()
+            mejor = candidatos[0]
+            posible_continuacion[tid_a] = f"{mejor[2]} (d={mejor[1]:.0f}px)"
+        else:
+            posible_continuacion[tid_a] = '-'
+
+    # Calcular diferencia de frames para ordenar — los mas sospechosos primero
+    def diff_frames(tid):
+        cont = posible_continuacion[tid]
+        if cont == '-':
+            return float('inf')  # sin continuacion van al final
+        # extraer el ID del string "ID60 (d=30px)" -> buscar en info
+        tid_cont = cont.split(' ')[0]
+        if tid_cont in info:
+            return info[tid_cont]['frame_inicio'] - info[tid]['frame_final']
+        return float('inf')
+
+    # Construir filas ordenadas por diferencia de frames (menor diferencia primero)
+    filas = []
+    for tid in sorted(ids, key=diff_frames):
+        d      = info[tid]
+        ultimo = d['ultimo_mov']
+        fila   = {
+            'ID':               tid,
+            'frame inicio':     d['frame_inicio'],
+            'frame final':      d['frame_final'],
+            'frames totales':   d['total_frames'],
+            'dx final (px)':    int(ultimo['dx']),
+            'dy final (px)':    int(ultimo['dy']),
+            'distancia (px)':   round(ultimo['distance_px'], 1),
+            'direccion':        ultimo['direction'],
+            'angulo (deg)':     round(d['ultimo_ang'], 1) if d['ultimo_ang'] is not None else '-',
+            'velocidad final':  round(d['ultimo_vel'], 2)  if d['ultimo_vel'] is not None else '-',
+            'area final (px2)': int(d['ultimo_area']['area_px']) if d['ultimo_area'] is not None else '-',
+            'excentricidad':    round(d['ultimo_exc'], 2)  if d['ultimo_exc'] is not None else '-',
+            'continua en ID':   posible_continuacion[tid],
+        }
+        filas.append(fila)
+
+    df_resumen = pd.DataFrame(filas)
+
+    # CSV
+    df_resumen.to_csv(
+        os.path.join(log_dir, f'{video_name}_resumen.csv'),
+        index=False, encoding='utf-8'
+    )
+
+    # PNG
+    n_cols = len(df_resumen.columns)
+    n_rows = len(df_resumen)
+    fig, ax = plt.subplots(figsize=(max(14, n_cols * 1.4), max(2, n_rows * 0.5 + 1.2)))
+    fig.patch.set_facecolor(BG_COLOR)
+    ax.set_facecolor(BG_COLOR)
+    ax.axis('off')
+
+    tabla = ax.table(
+        cellText=df_resumen.values,
+        colLabels=df_resumen.columns,
+        cellLoc='center',
+        loc='center'
+    )
+    tabla.auto_set_font_size(False)
+    tabla.set_fontsize(9)
+    tabla.scale(1, 1.6)
+
+    for (row, col), cell in tabla.get_celld().items():
+        cell.set_edgecolor('#444466')
+        if row == 0:
+            cell.set_facecolor('#2a2a4e')
+            cell.set_text_props(color=TEXT_COLOR, fontweight='bold')
+        else:
+            tid_fila = df_resumen.iloc[row - 1]['ID']
+            cont     = df_resumen.iloc[row - 1]['continua en ID']
+            if '.' in str(tid_fila):
+                cell.set_facecolor('#3a2010')
+                cell.set_text_props(color='#FFB060')
+            elif cont != '-':
+                cell.set_facecolor('#0d1f3a')
+                cell.set_text_props(color='#60B0FF')
+            else:
+                cell.set_facecolor('#12122a')
+                cell.set_text_props(color=TEXT_COLOR)
+
+    plt.tight_layout()
+    plt.savefig(
+        os.path.join(log_dir, f'{video_name}_resumen.png'),
+        dpi=150, bbox_inches='tight'
+    )
+    plt.close()
 
 def generar_todas_las_graficas(movement_log, area_log, video_name, log_dir):
     if not movement_log: return
@@ -378,6 +536,7 @@ def generar_todas_las_graficas(movement_log, area_log, video_name, log_dir):
         grafica_angulo(df_ang, video_name, log_dir)
         grafica_excentricidad(df_exc, video_name, log_dir)
         grafica_vel_vs_exc(df_vel, df_exc, video_name, log_dir)
+        generar_tabla_resumen(movement_log, area_log, video_name, log_dir)
 
 
 # =============================================================================
@@ -493,6 +652,13 @@ def detect_objects_from_video(video_path, max_detections=100):
 
                 canonical = id_remap[yolo_id]
                 ids_vistos_este_frame.add(canonical)
+                # Seguridad: si por alguna razon es nieto, subirlo a hijo
+                if canonical.count('.') > 1:
+                    raiz = canonical.split('.')[0]
+                    n = child_counts.get(raiz, 1) + 1
+                    child_counts[raiz] = n
+                    canonical = f"{raiz}.{n}"
+                    id_remap[yolo_id] = canonical
 
                 # Inicializar si es primera vez
                 if canonical not in initial_coords:
