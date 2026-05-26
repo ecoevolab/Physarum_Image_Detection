@@ -29,10 +29,10 @@ TEXT_COLOR = 'white'
 # Umbral de re-identificacion por distancia (para IDs que desaparecieron)
 REID_THRESHOLD = 100
 # Porcentaje minimo del box nuevo que debe estar dentro del padre para ser division
-SPLIT_OVERLAP_RATIO = 0.35
+SPLIT_OVERLAP_RATIO = 0.35 
 # Grace period antes de eliminar un ID perdido
-GRACE_PERIOD = 15
-MIN_PERSISTENCE = 20
+GRACE_PERIOD = 15 
+MIN_PERSISTENCE = 25  # Frames minimos para empezar a registrar movimiento (evita ruido inicial)
 
 # =============================================================================
 # 2. Utilidades
@@ -47,6 +47,10 @@ def apply_dark_style(ax):
     for spine in ax.spines.values():
         spine.set_edgecolor('#444466')
 
+MINUTOS_POR_FRAME = 5  # cada frame representa 5 minutos reales
+def frames_a_horas(frames, fps=None):
+    """Convierte frames a horas reales considerando que cada frame = 5 minutos."""
+    return frames * MINUTOS_POR_FRAME / 60
 
 def classify_direction(dx, dy, threshold=10):
     dist = math.sqrt(dx**2 + dy**2)
@@ -72,7 +76,7 @@ def draw_direction_arrow(frame, origin, current, label):
         return
     cv2.arrowedLine(frame, (ox, oy), (cx, cy), (0, 200, 255), 2, tipLength=0.3)
     cv2.putText(frame, label, (cx + 5, cy - 5),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 200, 255), 1)
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 200, 255), 1)
 
 
 # =============================================================================
@@ -243,37 +247,50 @@ def _plot_save(fig, ax, title, xlabel, ylabel, video_name, suffix, log_dir):
     plt.close()
 
 
-def grafica_velocidad(df_vel, video_name, log_dir):
+def grafica_velocidad(df_vel, video_name, log_dir, fps=24):
     fig, ax = plt.subplots(figsize=(10, 4))
     fig.patch.set_facecolor(BG_COLOR); apply_dark_style(ax)
     for tid, g in df_vel.groupby('track_id'):
-        ax.plot(g['frame'], g['velocidad'], linewidth=1.5, alpha=0.85, label=tid)
-    _plot_save(fig, ax, 'Velocidad (px/frame) vs Frame',
-               'Frame', 'Velocidad (px/frame)', video_name, 'velocidad', log_dir)
+        ax.plot(g['frame'].apply(lambda f: frames_a_horas(f, fps)),
+                g['velocidad'], linewidth=1.5, alpha=0.85, label=tid)
+    _plot_save(fig, ax, 'Velocidad vs Tiempo',
+               'Tiempo (horas)', 'Velocidad (px/frame)', video_name, 'velocidad', log_dir)
 
 
-def grafica_excentricidad(df_exc, video_name, log_dir):
-    if df_exc is None: return
-    fig, ax = plt.subplots(figsize=(10, 4))
-    fig.patch.set_facecolor(BG_COLOR); apply_dark_style(ax)
-    for tid, g in df_exc.groupby('track_id'):
-        ax.plot(g['frame'], g['excentricidad'], linewidth=1.5, alpha=0.85, label=tid)
-    ax.axhline(1.0, color='white', linewidth=0.5, alpha=0.4, linestyle='--')
-    _plot_save(fig, ax, 'Excentricidad (ancho/alto) vs Frame',
-               'Frame', 'Excentricidad', video_name, 'excentricidad', log_dir)
-
-
-def grafica_angulo(df_ang, video_name, log_dir):
+def grafica_angulo(df_ang, video_name, log_dir, fps=24):
     fig, ax = plt.subplots(figsize=(10, 4))
     fig.patch.set_facecolor(BG_COLOR); apply_dark_style(ax)
     for tid, g in df_ang.groupby('track_id'):
-        ax.plot(g['frame'], g['angulo'], linewidth=1.5, alpha=0.85, label=tid)
+        ax.plot(g['frame'].apply(lambda f: frames_a_horas(f, fps)),
+                g['angulo'], linewidth=1.5, alpha=0.85, label=tid)
     ax.axhline(0, color='white', linewidth=0.5, alpha=0.4, linestyle='--')
     ax.set_yticks([-180, -90, 0, 90, 180])
     ax.set_yticklabels(['-180 izq', '-90 abajo', '0 der', '90 arriba', '180 izq'],
                        color=TEXT_COLOR, fontsize=8)
-    _plot_save(fig, ax, 'Angulo de movimiento vs Frame',
-               'Frame', 'Angulo (grados)', video_name, 'angulo', log_dir)
+    _plot_save(fig, ax, 'Angulo de movimiento vs Tiempo',
+               'Tiempo (horas)', 'Angulo (grados)', video_name, 'angulo', log_dir)
+
+
+def grafica_excentricidad(df_exc, video_name, log_dir, fps=24):
+    if df_exc is None: return
+    fig, ax = plt.subplots(figsize=(10, 4))
+    fig.patch.set_facecolor(BG_COLOR); apply_dark_style(ax)
+    for tid, g in df_exc.groupby('track_id'):
+        ax.plot(g['frame'].apply(lambda f: frames_a_horas(f, fps)),
+                g['excentricidad'], linewidth=1.5, alpha=0.85, label=tid)
+    ax.axhline(1.0, color='white', linewidth=0.5, alpha=0.4, linestyle='--')
+    _plot_save(fig, ax, 'Excentricidad vs Tiempo',
+               'Tiempo (horas)', 'Excentricidad', video_name, 'excentricidad', log_dir)
+
+
+def grafica_area(grouped_a, video_name, log_dir, fps=24):
+    fig, ax = plt.subplots(figsize=(10, 4))
+    fig.patch.set_facecolor(BG_COLOR); apply_dark_style(ax)
+    for tid, data in grouped_a.items():
+        horas = [frames_a_horas(f, fps) for f in data['frames']]
+        ax.plot(horas, data['areas'], linewidth=1.5, label=tid)
+    _plot_save(fig, ax, 'Area aproximada vs Tiempo',
+               'Tiempo (horas)', 'Area (px2)', video_name, 'area', log_dir)
 
 
 def grafica_vel_vs_exc(df_vel, df_exc, video_name, log_dir):
@@ -309,9 +326,9 @@ def grafica_distancia(grouped, video_name, log_dir):
     fig, ax = plt.subplots(figsize=(10, 4))
     fig.patch.set_facecolor(BG_COLOR); apply_dark_style(ax)
     for tid, data in grouped.items():
-        ax.plot(data['frames'], data['dist'], linewidth=1.5, label=tid)
-    _plot_save(fig, ax, 'Distancia al punto inicial vs Frame',
-               'Frame', 'Distancia (px)', video_name, 'distance', log_dir)
+        ax.plot(data['horas'], data['dist'], linewidth=1.5, label=tid)  # <-- horas
+    _plot_save(fig, ax, 'Distancia al punto inicial vs Tiempo',
+               'Tiempo (horas)', 'Distancia (px)', video_name, 'distance', log_dir)
 
 
 def grafica_rosa_vientos(grouped, video_name, log_dir):
@@ -335,15 +352,7 @@ def grafica_rosa_vientos(grouped, video_name, log_dir):
     plt.close()
 
 
-def grafica_area(grouped_a, video_name, log_dir):
-    fig, ax = plt.subplots(figsize=(10, 4))
-    fig.patch.set_facecolor(BG_COLOR); apply_dark_style(ax)
-    for tid, data in grouped_a.items():
-        ax.plot(data['frames'], data['areas'], linewidth=1.5, label=tid)
-    _plot_save(fig, ax, 'Area aproximada (px2) vs Frame',
-               'Frame', 'Area (px2)', video_name, 'area', log_dir)
-
-def generar_tabla_resumen(movement_log, area_log, video_name, log_dir):
+def generar_tabla_resumen(movement_log, area_log, video_name, log_dir, fps=24):
     if not movement_log:
         return
 
@@ -356,107 +365,42 @@ def generar_tabla_resumen(movement_log, area_log, video_name, log_dir):
     df_vel = calcular_velocidad(df_mov)
     df_ang = calcular_angulo(df_mov)
 
-    # Construir info basica por ID
-    info = {}
-    for tid in df_mov['track_id'].unique():
+    filas = []
+    for tid in sorted(df_mov['track_id'].unique(), key=lambda x: df_mov[df_mov['track_id']==x]['frame'].min()):
         mov_tid  = df_mov[df_mov['track_id'] == tid].sort_values('frame')
         area_tid = df_area[df_area['track_id'] == tid].sort_values('frame')
         vel_tid  = df_vel[df_vel['track_id'] == tid].sort_values('frame') if not df_vel.empty else pd.DataFrame()
         exc_tid  = df_exc[df_exc['track_id'] == tid].sort_values('frame') if df_exc is not None else pd.DataFrame()
         ang_tid  = df_ang[df_ang['track_id'] == tid].sort_values('frame')
 
-        info[tid] = {
-            'frame_inicio':  int(mov_tid.iloc[0]['frame']),
-            'frame_final':   int(mov_tid.iloc[-1]['frame']),
-            'total_frames':  len(mov_tid),
-            'ultimo_mov':    mov_tid.iloc[-1],
-            'ultimo_area':   area_tid.iloc[-1] if not area_tid.empty else None,
-            'ultimo_vel':    vel_tid.iloc[-1]['velocidad'] if not vel_tid.empty else None,
-            'ultimo_exc':    exc_tid.iloc[-1]['excentricidad'] if not exc_tid.empty else None,
-            'ultimo_ang':    ang_tid.iloc[-1]['angulo'] if not ang_tid.empty else None,
-        }
+        ultimo     = mov_tid.iloc[-1]
+        ultimo_area = area_tid.iloc[-1] if not area_tid.empty else None
+        ultimo_vel  = vel_tid.iloc[-1]['velocidad'] if not vel_tid.empty else None
+        ultimo_exc  = exc_tid.iloc[-1]['excentricidad'] if not exc_tid.empty else None
+        ultimo_ang  = ang_tid.iloc[-1]['angulo'] if not ang_tid.empty else None
 
-    ids = list(info.keys())
-
-    # Puntos inicial y final de cada ID para calcular distancia
-    primeros_puntos = {}
-    ultimos_puntos  = {}
-    for tid in ids:
-        mov_tid = df_mov[df_mov['track_id'] == tid].sort_values('frame')
-        primeros_puntos[tid] = (float(mov_tid.iloc[0]['dx']),  float(mov_tid.iloc[0]['dy']))
-        ultimos_puntos[tid]  = (float(mov_tid.iloc[-1]['dx']), float(mov_tid.iloc[-1]['dy']))
-
-    # Detectar posibles continuaciones por tiempo Y distancia
-    FRAME_THRESHOLD = 30
-    DIST_THRESHOLD  = 50
-
-    posible_continuacion = {}
-    for tid_a in ids:
-        frame_final_a = info[tid_a]['frame_final']
-        ux_a, uy_a   = ultimos_puntos[tid_a]
-        candidatos    = []
-
-        for tid_b in ids:
-            if tid_b == tid_a:
-                continue
-            frame_inicio_b = info[tid_b]['frame_inicio']
-            diff = frame_inicio_b - frame_final_a
-            if not (0 < diff <= FRAME_THRESHOLD):
-                continue
-            px_b, py_b = primeros_puntos[tid_b]
-            dist = math.sqrt((px_b - ux_a)**2 + (py_b - uy_a)**2)
-            if dist <= DIST_THRESHOLD:
-                candidatos.append((diff, dist, tid_b))
-
-        if candidatos:
-            candidatos.sort()
-            mejor = candidatos[0]
-            posible_continuacion[tid_a] = f"{mejor[2]} (d={mejor[1]:.0f}px)"
-        else:
-            posible_continuacion[tid_a] = '-'
-
-    # Calcular diferencia de frames para ordenar — los mas sospechosos primero
-    def diff_frames(tid):
-        cont = posible_continuacion[tid]
-        if cont == '-':
-            return float('inf')  # sin continuacion van al final
-        # extraer el ID del string "ID60 (d=30px)" -> buscar en info
-        tid_cont = cont.split(' ')[0]
-        if tid_cont in info:
-            return info[tid_cont]['frame_inicio'] - info[tid]['frame_final']
-        return float('inf')
-
-    # Construir filas ordenadas por diferencia de frames (menor diferencia primero)
-    filas = []
-    for tid in sorted(ids, key=diff_frames):
-        d      = info[tid]
-        ultimo = d['ultimo_mov']
-        fila   = {
+        filas.append({
             'ID':               tid,
-            'frame inicio':     d['frame_inicio'],
-            'frame final':      d['frame_final'],
-            'frames totales':   d['total_frames'],
+            'frame inicio':     int(mov_tid.iloc[0]['frame']),
+            'frame final':      int(ultimo['frame']),
+            'frames totales':   len(mov_tid),
             'dx final (px)':    int(ultimo['dx']),
             'dy final (px)':    int(ultimo['dy']),
             'distancia (px)':   round(ultimo['distance_px'], 1),
             'direccion':        ultimo['direction'],
-            'angulo (deg)':     round(d['ultimo_ang'], 1) if d['ultimo_ang'] is not None else '-',
-            'velocidad final':  round(d['ultimo_vel'], 2)  if d['ultimo_vel'] is not None else '-',
-            'area final (px2)': int(d['ultimo_area']['area_px']) if d['ultimo_area'] is not None else '-',
-            'excentricidad':    round(d['ultimo_exc'], 2)  if d['ultimo_exc'] is not None else '-',
-            'continua en ID':   posible_continuacion[tid],
-        }
-        filas.append(fila)
+            'angulo (deg)':     round(ultimo_ang, 1) if ultimo_ang is not None else '-',
+            'velocidad final':  round(ultimo_vel, 2)  if ultimo_vel is not None else '-',
+            'area final (px2)': int(ultimo_area['area_px']) if ultimo_area is not None else '-',
+            'excentricidad':    round(ultimo_exc, 2)  if ultimo_exc is not None else '-',
+        })
 
     df_resumen = pd.DataFrame(filas)
 
-    # CSV
     df_resumen.to_csv(
         os.path.join(log_dir, f'{video_name}_resumen.csv'),
         index=False, encoding='utf-8'
     )
 
-    # PNG
     n_cols = len(df_resumen.columns)
     n_rows = len(df_resumen)
     fig, ax = plt.subplots(figsize=(max(14, n_cols * 1.4), max(2, n_rows * 0.5 + 1.2)))
@@ -481,13 +425,9 @@ def generar_tabla_resumen(movement_log, area_log, video_name, log_dir):
             cell.set_text_props(color=TEXT_COLOR, fontweight='bold')
         else:
             tid_fila = df_resumen.iloc[row - 1]['ID']
-            cont     = df_resumen.iloc[row - 1]['continua en ID']
             if '.' in str(tid_fila):
                 cell.set_facecolor('#3a2010')
                 cell.set_text_props(color='#FFB060')
-            elif cont != '-':
-                cell.set_facecolor('#0d1f3a')
-                cell.set_text_props(color='#60B0FF')
             else:
                 cell.set_facecolor('#12122a')
                 cell.set_text_props(color=TEXT_COLOR)
@@ -499,15 +439,112 @@ def generar_tabla_resumen(movement_log, area_log, video_name, log_dir):
     )
     plt.close()
 
-def generar_todas_las_graficas(movement_log, area_log, video_name, log_dir):
+def calcular_metricas_por_intervalo(df_movement, df_area, intervalo=10):
+    """
+    Divide el video en intervalos de N frames y calcula para cada physarum
+    su velocidad promedio y distancia recorrida en ese intervalo.
+    Retorna un DataFrame con una fila por (track_id, intervalo).
+    """
+    resultados = []
+    frame_max = df_movement['frame'].max()
+
+    for inicio in range(0, int(frame_max), int(intervalo)):
+        fin = inicio + intervalo
+        ventana = df_movement[
+            (df_movement['frame'] >= inicio) &
+            (df_movement['frame'] < fin)
+        ]
+
+        for tid, grupo in ventana.groupby('track_id'):
+            grupo = grupo.sort_values('frame').reset_index(drop=True)
+            if len(grupo) < 5:
+                continue
+
+            # Distancia recorrida en el intervalo (suma de pasos consecutivos)
+            dist_total = 0
+            for i in range(1, len(grupo)):
+                dx_diff = grupo.loc[i, 'dx'] - grupo.loc[i-1, 'dx']
+                dy_diff = grupo.loc[i, 'dy'] - grupo.loc[i-1, 'dy']
+                dist_total += math.sqrt(dx_diff**2 + dy_diff**2)
+
+            vel_promedio = dist_total / intervalo
+
+            resultados.append({
+                'intervalo':     inicio,
+                'track_id':      tid,
+                'distancia':     round(dist_total, 2),
+                'velocidad_prom': round(vel_promedio, 2),
+            })
+
+    return pd.DataFrame(resultados)
+
+
+def grafica_histogramas_intervalo(df_movement, area_log, video_name, log_dir, fps=24, intervalo=10):
+    df_area = pd.DataFrame(area_log, columns=['track_id','frame','area_px','w','h'])
+    df_int  = calcular_metricas_por_intervalo(df_movement, df_area, intervalo)
+
+    if df_int.empty:
+        return
+
+    # Eliminar outliers del 2% superior
+    vel_p90  = df_int['velocidad_prom'].quantile(0.90)
+    dist_p90 = df_int['distancia'].quantile(0.90)
+
+    df_vel_clean  = df_int[df_int['velocidad_prom'] <= vel_p90]
+    df_dist_clean = df_int[df_int['distancia']      <= dist_p90]
+
+    n_outliers_vel  = len(df_int) - len(df_vel_clean)
+    n_outliers_dist = len(df_int) - len(df_dist_clean)
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    fig.patch.set_facecolor(BG_COLOR)
+    for ax in axes:
+        apply_dark_style(ax)
+
+    # Histograma velocidad
+    axes[0].hist(df_vel_clean['velocidad_prom'], bins=20,
+                 color='#7B5EA7', edgecolor='#444466', alpha=0.85)
+    axes[0].set_title(f'Distribucion de velocidad promedio\n(intervalos de {intervalo} frames, sin top 10%)')
+    axes[0].set_xlabel('Velocidad promedio (px/frame)')
+    axes[0].set_ylabel('Frecuencia (# physarums)')
+    media_vel = df_vel_clean['velocidad_prom'].mean()
+    axes[0].axvline(media_vel, color='#FFB060', linewidth=1.5,
+                    linestyle='--', label=f'Media: {media_vel:.2f}\n({n_outliers_vel} outliers removidos)')
+    axes[0].legend(facecolor='#2a2a4e', labelcolor=TEXT_COLOR, fontsize=8)
+
+    # Histograma distancia
+    axes[1].hist(df_dist_clean['distancia'], bins=20,
+                 color='#3A7EBF', edgecolor='#444466', alpha=0.85)
+    axes[1].set_title(f'Distribucion de distancia recorrida\n(intervalos de {intervalo} frames, sin top 10%)')
+    axes[1].set_xlabel('Distancia recorrida (px)')
+    axes[1].set_ylabel('Frecuencia (# physarums)')
+    media_dist = df_dist_clean['distancia'].mean()
+    axes[1].axvline(media_dist, color='#FFB060', linewidth=1.5,
+                    linestyle='--', label=f'Media: {media_dist:.2f}\n({n_outliers_dist} outliers removidos)')
+    axes[1].legend(facecolor='#2a2a4e', labelcolor=TEXT_COLOR, fontsize=8)
+
+    plt.suptitle('Comportamiento colectivo de physarums', color=TEXT_COLOR,
+                 fontsize=13, y=1.02)
+    plt.tight_layout()
+    plt.savefig(os.path.join(log_dir, f'{video_name}_histogramas.png'), dpi=150)
+    plt.close()
+
+    df_int.to_csv(
+        os.path.join(log_dir, f'{video_name}_intervalos.csv'),
+        index=False, encoding='utf-8'
+    )
+def generar_todas_las_graficas(movement_log, area_log, video_name, log_dir, fps=24):
     if not movement_log: return
 
     grouped = {}
     for tid, fr, dx, dy, direction, dist in movement_log:
         if tid not in grouped:
-            grouped[tid] = {'frames': [], 'dx': [], 'dy': [], 'dist': [], 'dirs': []}
-        grouped[tid]['frames'].append(fr); grouped[tid]['dx'].append(dx)
-        grouped[tid]['dy'].append(dy);     grouped[tid]['dist'].append(dist)
+            grouped[tid] = {'frames': [], 'horas': [], 'dx': [], 'dy': [], 'dist': [], 'dirs': []}
+        grouped[tid]['frames'].append(fr)
+        grouped[tid]['horas'].append(frames_a_horas(fr, fps))  # <-- nuevo
+        grouped[tid]['dx'].append(dx)
+        grouped[tid]['dy'].append(dy)
+        grouped[tid]['dist'].append(dist)
         grouped[tid]['dirs'].append(direction)
 
     grouped_a = {}
@@ -528,15 +565,16 @@ def generar_todas_las_graficas(movement_log, area_log, video_name, log_dir):
     df_ang = calcular_angulo(df_movement)
 
     grafica_trayectoria(grouped, video_name, log_dir)
-    grafica_distancia(grouped, video_name, log_dir)
+    grafica_distancia(grouped, video_name, log_dir)       # ya usa 'horas'
     grafica_rosa_vientos(grouped, video_name, log_dir)
-    grafica_area(grouped_a, video_name, log_dir)
+    grafica_area(grouped_a, video_name, log_dir, fps)
     if not df_vel.empty:
-        grafica_velocidad(df_vel, video_name, log_dir)
-        grafica_angulo(df_ang, video_name, log_dir)
-        grafica_excentricidad(df_exc, video_name, log_dir)
+        grafica_velocidad(df_vel, video_name, log_dir, fps)
+        grafica_angulo(df_ang, video_name, log_dir, fps)
+        grafica_excentricidad(df_exc, video_name, log_dir, fps)
         grafica_vel_vs_exc(df_vel, df_exc, video_name, log_dir)
-        generar_tabla_resumen(movement_log, area_log, video_name, log_dir)
+        grafica_histogramas_intervalo(df_movement, area_log, video_name, log_dir, fps)
+        generar_tabla_resumen(movement_log, area_log, video_name, log_dir, fps)
 
 
 # =============================================================================
@@ -549,6 +587,7 @@ def detect_objects_from_video(video_path, max_detections=100):
     cap = cv2.VideoCapture(video_path)
     original_width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps             = cap.get(cv2.CAP_PROP_FPS)
 
     ret, first_frame = cap.read()
     if not ret:
@@ -577,13 +616,14 @@ def detect_objects_from_video(video_path, max_detections=100):
     last_boxes     = {}   # label -> [x1,y1,x2,y2] ultimo bounding box  *** NUEVO ***
     id_persistence = {}   # label -> frames visibles
     id_grace       = {}   # label -> frames desde que desaparecio
+    persistence_buffer = {}  # label -> [(frame, dx, dy, dir, dist, area, w, h)]
     ids_activos    = set()
 
     id_remap       = {}   # yolo_id (int) -> canonical label (str)
     child_counts   = {}   # label -> cuantos hijos tiene
 
     split_log      = []
-    movement_log   = []
+    movement_log   = [] 
     area_log       = []
 
     # Exponer refs para resolver_nuevo_id
@@ -610,7 +650,7 @@ def detect_objects_from_video(video_path, max_detections=100):
         frame_count += 1
 
         frame_roi = frame[y_roi:y_roi+h_roi, x_roi:x_roi+w_roi]
-        results   = model.track(frame_roi, persist=True, conf=0.3, iou=0.6)
+        results   = model.track(frame_roi, persist=True, conf=0.4, iou=0.6) 
 
         ids_vistos_este_frame = set()
         already_claimed       = set()
@@ -675,10 +715,29 @@ def detect_objects_from_video(video_path, max_detections=100):
                 dy     = -(cy - oy)
                 direction, dist = classify_direction(dx, dy)
 
-                if id_persistence[canonical] >= MIN_PERSISTENCE:
-                    movement_log.append((canonical, frame_count, dx, dy,
-                                         direction, round(dist, 1)))
-                    area_log.append((canonical, frame_count, area_px, w_box, h_box))
+                # Buffer hasta confirmar MIN_PERSISTENCE
+                entrada_mov  = (canonical, frame_count, dx, dy, direction, round(dist, 1))
+                entrada_area = (canonical, frame_count, area_px, w_box, h_box)
+
+                if id_persistence[canonical] < MIN_PERSISTENCE:
+                    # Acumular en buffer sin guardar en log
+                    if canonical not in persistence_buffer:
+                        persistence_buffer[canonical] = []
+                    persistence_buffer[canonical].append((entrada_mov, entrada_area))
+
+                elif id_persistence[canonical] == MIN_PERSISTENCE:
+                    # Confirmar — volcar todo el buffer al log
+                    if canonical in persistence_buffer:
+                        for em, ea in persistence_buffer[canonical]:
+                            movement_log.append(em)
+                            area_log.append(ea)
+                        del persistence_buffer[canonical]
+                    movement_log.append(entrada_mov)
+                    area_log.append(entrada_area)
+
+                else:
+                    movement_log.append(entrada_mov)
+                    area_log.append(entrada_area)
 
                 # Dibujo
                 is_child  = '.' in canonical
@@ -686,9 +745,9 @@ def detect_objects_from_video(video_path, max_detections=100):
                 cv2.rectangle(frame_roi, (x1, y1), (x2, y2), box_color, 2)
                 cv2.circle(frame_roi, (cx, cy), 4, (255, 255, 0), -1)
                 cv2.putText(frame_roi, canonical, (x1, y1 - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 0, 255), 1)
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 60), 1)
                 cv2.putText(frame_roi, f'A:{area_px}px', (x1, y2 + 15),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 60), 1)
                 draw_direction_arrow(
                     frame_roi,
                     initial_coords[canonical], (cx, cy),
@@ -736,7 +795,7 @@ def detect_objects_from_video(video_path, max_detections=100):
                 [['frame', 'padre', 'hijo1', 'hijo2']] + split_log
             )
 
-    generar_todas_las_graficas(movement_log, area_log, video_name, log_dir)
+    generar_todas_las_graficas(movement_log, area_log, video_name, log_dir, fps)
 
 
 # =============================================================================
