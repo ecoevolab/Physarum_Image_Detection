@@ -31,8 +31,13 @@ REID_THRESHOLD = 100
 # Porcentaje minimo del box nuevo que debe estar dentro del padre para ser division
 SPLIT_OVERLAP_RATIO = 0.35 
 # Grace period antes de eliminar un ID perdido
-GRACE_PERIOD = 15 
+GRACE_PERIOD = 15
 MIN_PERSISTENCE = 25  # Frames minimos para empezar a registrar movimiento (evita ruido inicial)
+
+# Altura promedio del area capturada por la camara, usada para convertir
+# medidas de pixeles a centimetros. Varia un poco video a video, pero
+# este promedio es suficientemente bueno para el analisis.
+ALTURA_CAPTURA_CM = 28
 
 # =============================================================================
 # 2. Utilidades
@@ -209,8 +214,8 @@ def calcular_velocidad(df_movement):
     for tid, grupo in df_movement.groupby('track_id'):
         grupo = grupo.sort_values('frame').reset_index(drop=True)
         for i in range(1, len(grupo)):
-            dx_diff = grupo.loc[i, 'dx'] - grupo.loc[i-1, 'dx']
-            dy_diff = grupo.loc[i, 'dy'] - grupo.loc[i-1, 'dy']
+            dx_diff = grupo.loc[i, 'dx_cm'] - grupo.loc[i-1, 'dx_cm']
+            dy_diff = grupo.loc[i, 'dy_cm'] - grupo.loc[i-1, 'dy_cm']
             vel     = math.sqrt(dx_diff**2 + dy_diff**2)
             resultados.append({
                 'track_id': tid, 'frame': grupo.loc[i, 'frame'], 'velocidad': vel
@@ -219,9 +224,9 @@ def calcular_velocidad(df_movement):
 
 
 def calcular_excentricidad(df_area):
-    if 'w' in df_area.columns and 'h' in df_area.columns:
+    if 'w_cm' in df_area.columns and 'h_cm' in df_area.columns:
         df = df_area.copy()
-        df['excentricidad'] = df['w'] / df['h'].replace(0, np.nan)
+        df['excentricidad'] = df['w_cm'] / df['h_cm'].replace(0, np.nan)
         return df[['track_id', 'frame', 'excentricidad']]
     return None
 
@@ -229,7 +234,7 @@ def calcular_excentricidad(df_area):
 def calcular_angulo(df_movement):
     df = df_movement.copy()
     df['angulo'] = df.apply(
-        lambda r: math.degrees(math.atan2(r['dy'], r['dx'])), axis=1
+        lambda r: math.degrees(math.atan2(r['dy_cm'], r['dx_cm'])), axis=1
     )
     return df[['track_id', 'frame', 'angulo']]
 
@@ -247,14 +252,32 @@ def _plot_save(fig, ax, title, xlabel, ylabel, video_name, suffix, log_dir):
     plt.close()
 
 
+VENTANA_SUAVIZADO = 5  # frames reales a cada lado, para limpiar ruido de deteccion
+
+def suavizar_por_frame(frames, valores, ventana=VENTANA_SUAVIZADO):
+    """Media movil centrada que respeta el frame real, no solo la posicion
+    en la lista. Cuando un physarum se pierde unos frames y reaparece,
+    los huecos se rellenan con NaN antes de promediar, para que la ventana
+    de 'N vecinos' represente N frames de tiempo real (y no N detecciones
+    que en realidad estan separadas por un hueco). No afecta los CSVs
+    crudos, solo lo que se dibuja."""
+    frames = list(frames)
+    serie = pd.Series(list(valores), index=frames)
+    frame_min, frame_max = int(min(frames)), int(max(frames))
+    serie_completa = serie.reindex(range(frame_min, frame_max + 1))
+    suavizada = serie_completa.rolling(window=ventana, center=True, min_periods=1).mean()
+    return suavizada.loc[frames].values
+
+
 def grafica_velocidad(df_vel, video_name, log_dir, fps=24):
     fig, ax = plt.subplots(figsize=(10, 4))
     fig.patch.set_facecolor(BG_COLOR); apply_dark_style(ax)
     for tid, g in df_vel.groupby('track_id'):
+        g = g.sort_values('frame')
         ax.plot(g['frame'].apply(lambda f: frames_a_horas(f, fps)),
-                g['velocidad'], linewidth=1.5, alpha=0.85, label=tid)
+                suavizar_por_frame(g['frame'], g['velocidad']), linewidth=1.5, alpha=0.85, label=tid)
     _plot_save(fig, ax, 'Velocidad vs Tiempo',
-               'Tiempo (horas)', 'Velocidad (px/frame)', video_name, 'velocidad', log_dir)
+               'Tiempo (horas)', 'Velocidad (cm/frame)', video_name, 'velocidad', log_dir)
 
 
 def grafica_angulo(df_ang, video_name, log_dir, fps=24):
@@ -276,8 +299,9 @@ def grafica_excentricidad(df_exc, video_name, log_dir, fps=24):
     fig, ax = plt.subplots(figsize=(10, 4))
     fig.patch.set_facecolor(BG_COLOR); apply_dark_style(ax)
     for tid, g in df_exc.groupby('track_id'):
+        g = g.sort_values('frame')
         ax.plot(g['frame'].apply(lambda f: frames_a_horas(f, fps)),
-                g['excentricidad'], linewidth=1.5, alpha=0.85, label=tid)
+                suavizar_por_frame(g['frame'], g['excentricidad']), linewidth=1.5, alpha=0.85, label=tid)
     ax.axhline(1.0, color='white', linewidth=0.5, alpha=0.4, linestyle='--')
     _plot_save(fig, ax, 'Excentricidad vs Tiempo',
                'Tiempo (horas)', 'Excentricidad', video_name, 'excentricidad', log_dir)
@@ -288,9 +312,24 @@ def grafica_area(grouped_a, video_name, log_dir, fps=24):
     fig.patch.set_facecolor(BG_COLOR); apply_dark_style(ax)
     for tid, data in grouped_a.items():
         horas = [frames_a_horas(f, fps) for f in data['frames']]
-        ax.plot(horas, data['areas'], linewidth=1.5, label=tid)
+        areas_suavizadas = suavizar_por_frame(data['frames'], data['areas'])
+        ax.plot(horas, areas_suavizadas, linewidth=1.5, label=tid)
     _plot_save(fig, ax, 'Area aproximada vs Tiempo',
-               'Tiempo (horas)', 'Area (px2)', video_name, 'area', log_dir)
+               'Tiempo (horas)', 'Area (cm2)', video_name, 'area', log_dir)
+
+
+def grafica_histograma_excentricidad(df_exc, video_name, log_dir):
+    if df_exc is None or df_exc.empty: return
+    vals = df_exc['excentricidad'].dropna()
+    if vals.empty: return
+    fig, ax = plt.subplots(figsize=(8, 5))
+    fig.patch.set_facecolor(BG_COLOR); apply_dark_style(ax)
+    ax.hist(vals, bins=25, color='#7B5EA7', edgecolor='#444466', alpha=0.85)
+    media = vals.mean()
+    ax.axvline(media, color='#FFB060', linewidth=1.5, linestyle='--',
+               label=f'Media: {media:.2f}')
+    _plot_save(fig, ax, f'Distribucion de excentricidad - {video_name}',
+               'Excentricidad', 'Frecuencia', video_name, 'histograma_excentricidad', log_dir)
 
 
 def grafica_vel_vs_exc(df_vel, df_exc, video_name, log_dir):
@@ -305,7 +344,7 @@ def grafica_vel_vs_exc(df_vel, df_exc, video_name, log_dir):
                    label=tid, alpha=0.6, s=20, color=color)
     ax.axvline(1.0, color='white', linewidth=0.5, alpha=0.4, linestyle='--')
     _plot_save(fig, ax, 'Velocidad vs Excentricidad',
-               'Excentricidad', 'Velocidad (px/frame)', video_name, 'vel_vs_exc', log_dir)
+               'Excentricidad', 'Velocidad (cm/frame)', video_name, 'vel_vs_exc', log_dir)
 
 
 def grafica_trayectoria(grouped, video_name, log_dir):
@@ -319,7 +358,7 @@ def grafica_trayectoria(grouped, video_name, log_dir):
     ax.axhline(0, color='white', linewidth=0.5, alpha=0.4)
     ax.axvline(0, color='white', linewidth=0.5, alpha=0.4)
     _plot_save(fig, ax, 'Trayectoria 2D (desde punto inicial)',
-               'dx (px)', 'dy (px)', video_name, 'trajectory2D', log_dir)
+               'dx (cm)', 'dy (cm)', video_name, 'trajectory2D', log_dir)
 
 
 def grafica_distancia(grouped, video_name, log_dir):
@@ -328,7 +367,7 @@ def grafica_distancia(grouped, video_name, log_dir):
     for tid, data in grouped.items():
         ax.plot(data['horas'], data['dist'], linewidth=1.5, label=tid)  # <-- horas
     _plot_save(fig, ax, 'Distancia al punto inicial vs Tiempo',
-               'Tiempo (horas)', 'Distancia (px)', video_name, 'distance', log_dir)
+               'Tiempo (horas)', 'Distancia (cm)', video_name, 'distance', log_dir)
 
 
 def grafica_rosa_vientos(grouped, video_name, log_dir):
@@ -357,9 +396,9 @@ def generar_tabla_resumen(movement_log, area_log, video_name, log_dir, fps=24):
         return
 
     df_mov  = pd.DataFrame(movement_log,
-                           columns=['track_id','frame','dx','dy','direction','distance_px'])
+                           columns=['track_id','frame','dx_cm','dy_cm','direction','distance_cm'])
     df_area = pd.DataFrame(area_log,
-                           columns=['track_id','frame','area_px','w','h'])
+                           columns=['track_id','frame','area_cm2','w_cm','h_cm'])
 
     df_exc = calcular_excentricidad(df_area)
     df_vel = calcular_velocidad(df_mov)
@@ -384,13 +423,13 @@ def generar_tabla_resumen(movement_log, area_log, video_name, log_dir, fps=24):
             'frame inicio':     int(mov_tid.iloc[0]['frame']),
             'frame final':      int(ultimo['frame']),
             'frames totales':   len(mov_tid),
-            'dx final (px)':    int(ultimo['dx']),
-            'dy final (px)':    int(ultimo['dy']),
-            'distancia (px)':   round(ultimo['distance_px'], 1),
+            'dx final (cm)':    round(ultimo['dx_cm'], 2),
+            'dy final (cm)':    round(ultimo['dy_cm'], 2),
+            'distancia (cm)':   round(ultimo['distance_cm'], 2),
             'direccion':        ultimo['direction'],
             'angulo (deg)':     round(ultimo_ang, 1) if ultimo_ang is not None else '-',
             'velocidad final':  round(ultimo_vel, 2)  if ultimo_vel is not None else '-',
-            'area final (px2)': int(ultimo_area['area_px']) if ultimo_area is not None else '-',
+            'area final (cm2)': round(ultimo_area['area_cm2'], 2) if ultimo_area is not None else '-',
             'excentricidad':    round(ultimo_exc, 2)  if ultimo_exc is not None else '-',
         })
 
@@ -463,8 +502,8 @@ def calcular_metricas_por_intervalo(df_movement, df_area, intervalo=10):
             # Distancia recorrida en el intervalo (suma de pasos consecutivos)
             dist_total = 0
             for i in range(1, len(grupo)):
-                dx_diff = grupo.loc[i, 'dx'] - grupo.loc[i-1, 'dx']
-                dy_diff = grupo.loc[i, 'dy'] - grupo.loc[i-1, 'dy']
+                dx_diff = grupo.loc[i, 'dx_cm'] - grupo.loc[i-1, 'dx_cm']
+                dy_diff = grupo.loc[i, 'dy_cm'] - grupo.loc[i-1, 'dy_cm']
                 dist_total += math.sqrt(dx_diff**2 + dy_diff**2)
 
             vel_promedio = dist_total / intervalo
@@ -480,7 +519,7 @@ def calcular_metricas_por_intervalo(df_movement, df_area, intervalo=10):
 
 
 def grafica_histogramas_intervalo(df_movement, area_log, video_name, log_dir, fps=24, intervalo=10):
-    df_area = pd.DataFrame(area_log, columns=['track_id','frame','area_px','w','h'])
+    df_area = pd.DataFrame(area_log, columns=['track_id','frame','area_cm2','w_cm','h_cm'])
     df_int  = calcular_metricas_por_intervalo(df_movement, df_area, intervalo)
 
     if df_int.empty:
@@ -505,7 +544,7 @@ def grafica_histogramas_intervalo(df_movement, area_log, video_name, log_dir, fp
     axes[0].hist(df_vel_clean['velocidad_prom'], bins=20,
                  color='#7B5EA7', edgecolor='#444466', alpha=0.85)
     axes[0].set_title(f'Distribucion de velocidad promedio\n(intervalos de {intervalo} frames, sin top 10%)')
-    axes[0].set_xlabel('Velocidad promedio (px/frame)')
+    axes[0].set_xlabel('Velocidad promedio (cm/frame)')
     axes[0].set_ylabel('Frecuencia (# physarums)')
     media_vel = df_vel_clean['velocidad_prom'].mean()
     axes[0].axvline(media_vel, color='#FFB060', linewidth=1.5,
@@ -516,7 +555,7 @@ def grafica_histogramas_intervalo(df_movement, area_log, video_name, log_dir, fp
     axes[1].hist(df_dist_clean['distancia'], bins=20,
                  color='#3A7EBF', edgecolor='#444466', alpha=0.85)
     axes[1].set_title(f'Distribucion de distancia recorrida\n(intervalos de {intervalo} frames, sin top 10%)')
-    axes[1].set_xlabel('Distancia recorrida (px)')
+    axes[1].set_xlabel('Distancia recorrida (cm)')
     axes[1].set_ylabel('Frecuencia (# physarums)')
     media_dist = df_dist_clean['distancia'].mean()
     axes[1].axvline(media_dist, color='#FFB060', linewidth=1.5,
@@ -555,10 +594,10 @@ def generar_todas_las_graficas(movement_log, area_log, video_name, log_dir, fps=
         grouped_a[tid]['areas'].append(area)
 
     df_movement  = pd.DataFrame(movement_log,
-                                columns=['track_id', 'frame', 'dx', 'dy',
-                                         'direction', 'distance_px'])
+                                columns=['track_id', 'frame', 'dx_cm', 'dy_cm',
+                                         'direction', 'distance_cm'])
     df_area_full = pd.DataFrame(area_log,
-                                columns=['track_id', 'frame', 'area_px', 'w', 'h'])
+                                columns=['track_id', 'frame', 'area_cm2', 'w_cm', 'h_cm'])
 
     df_vel = calcular_velocidad(df_movement)
     df_exc = calcular_excentricidad(df_area_full)
@@ -574,6 +613,7 @@ def generar_todas_las_graficas(movement_log, area_log, video_name, log_dir, fps=
         grafica_excentricidad(df_exc, video_name, log_dir, fps)
         grafica_vel_vs_exc(df_vel, df_exc, video_name, log_dir)
         grafica_histogramas_intervalo(df_movement, area_log, video_name, log_dir, fps)
+        grafica_histograma_excentricidad(df_exc, video_name, log_dir)
         generar_tabla_resumen(movement_log, area_log, video_name, log_dir, fps)
 
 
@@ -633,8 +673,12 @@ def detect_objects_from_video(video_path, max_detections=100):
     video_name  = os.path.splitext(os.path.basename(video_path))[0]
     save_dir    = os.path.join('detected_frames', video_name)
     os.makedirs(save_dir, exist_ok=True)
-    log_dir = 'movement_logs'
+    log_dir = os.path.join('movement_logs', video_name)
     os.makedirs(log_dir, exist_ok=True)
+
+    # Calibracion px -> cm: la camara captura ~28cm de alto en promedio
+    # (varia un poco por video, pero esta aproximacion es suficiente).
+    cm_por_px = ALTURA_CAPTURA_CM / original_height
 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out    = cv2.VideoWriter(
@@ -715,9 +759,20 @@ def detect_objects_from_video(video_path, max_detections=100):
                 dy     = -(cy - oy)
                 direction, dist = classify_direction(dx, dy)
 
+                # Convertir a centimetros para el log/graficas (la logica
+                # de tracking arriba sigue usando pixeles)
+                dx_cm   = dx * cm_por_px
+                dy_cm   = dy * cm_por_px
+                dist_cm = dist * cm_por_px
+                area_cm2 = area_px * (cm_por_px ** 2)
+                w_cm    = w_box * cm_por_px
+                h_cm    = h_box * cm_por_px
+
                 # Buffer hasta confirmar MIN_PERSISTENCE
-                entrada_mov  = (canonical, frame_count, dx, dy, direction, round(dist, 1))
-                entrada_area = (canonical, frame_count, area_px, w_box, h_box)
+                entrada_mov  = (canonical, frame_count, round(dx_cm, 3), round(dy_cm, 3),
+                                 direction, round(dist_cm, 3))
+                entrada_area = (canonical, frame_count, round(area_cm2, 3),
+                                 round(w_cm, 3), round(h_cm, 3))
 
                 if id_persistence[canonical] < MIN_PERSISTENCE:
                     # Acumular en buffer sin guardar en log
@@ -746,7 +801,7 @@ def detect_objects_from_video(video_path, max_detections=100):
                 cv2.circle(frame_roi, (cx, cy), 4, (255, 255, 0), -1)
                 cv2.putText(frame_roi, canonical, (x1, y1 - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 60), 1)
-                cv2.putText(frame_roi, f'A:{area_px}px', (x1, y2 + 15),
+                cv2.putText(frame_roi, f'A:{area_cm2:.1f}cm2', (x1, y2 + 15),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 60), 1)
                 draw_direction_arrow(
                     frame_roi,
@@ -781,12 +836,12 @@ def detect_objects_from_video(video_path, max_detections=100):
     with open(os.path.join(log_dir, f'{video_name}_movement.csv'), 'w',
               newline='', encoding='utf-8') as f:
         csv.writer(f).writerows(
-            [['track_id', 'frame', 'dx', 'dy', 'direction', 'distance_px']] + movement_log
+            [['track_id', 'frame', 'dx_cm', 'dy_cm', 'direction', 'distance_cm']] + movement_log
         )
     with open(os.path.join(log_dir, f'{video_name}_area.csv'), 'w',
               newline='', encoding='utf-8') as f:
         csv.writer(f).writerows(
-            [['track_id', 'frame', 'area_px', 'w', 'h']] + area_log
+            [['track_id', 'frame', 'area_cm2', 'w_cm', 'h_cm']] + area_log
         )
     if split_log:
         with open(os.path.join(log_dir, f'{video_name}_splits.csv'), 'w',
