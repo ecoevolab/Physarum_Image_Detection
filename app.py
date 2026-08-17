@@ -262,8 +262,12 @@ def suavizar_por_frame(frames, valores, ventana=VENTANA_SUAVIZADO):
     que en realidad estan separadas por un hueco). No afecta los CSVs
     crudos, solo lo que se dibuja."""
     frames = list(frames)
-    serie = pd.Series(list(valores), index=frames)
-    frame_min, frame_max = int(min(frames)), int(max(frames))
+    # A veces el mismo track_id tiene mas de un registro para el mismo
+    # frame (glitch de reasignacion de IDs en divisiones); se promedian
+    # para no romper el reindex.
+    df_tmp = pd.DataFrame({'frame': frames, 'valor': list(valores)})
+    serie = df_tmp.groupby('frame')['valor'].mean()
+    frame_min, frame_max = int(serie.index.min()), int(serie.index.max())
     serie_completa = serie.reindex(range(frame_min, frame_max + 1))
     suavizada = serie_completa.rolling(window=ventana, center=True, min_periods=1).mean()
     return suavizada.loc[frames].values
@@ -391,7 +395,7 @@ def grafica_rosa_vientos(grouped, video_name, log_dir):
     plt.close()
 
 
-def generar_tabla_resumen(movement_log, area_log, video_name, log_dir, fps=24):
+def generar_tabla_resumen(movement_log, area_log, video_name, log_dir, csv_dir, fps=24):
     if not movement_log:
         return
 
@@ -436,7 +440,7 @@ def generar_tabla_resumen(movement_log, area_log, video_name, log_dir, fps=24):
     df_resumen = pd.DataFrame(filas)
 
     df_resumen.to_csv(
-        os.path.join(log_dir, f'{video_name}_resumen.csv'),
+        os.path.join(csv_dir, f'{video_name}_resumen.csv'),
         index=False, encoding='utf-8'
     )
 
@@ -518,7 +522,7 @@ def calcular_metricas_por_intervalo(df_movement, df_area, intervalo=10):
     return pd.DataFrame(resultados)
 
 
-def grafica_histogramas_intervalo(df_movement, area_log, video_name, log_dir, fps=24, intervalo=10):
+def grafica_histogramas_intervalo(df_movement, area_log, video_name, log_dir, csv_dir, fps=24, intervalo=10):
     df_area = pd.DataFrame(area_log, columns=['track_id','frame','area_cm2','w_cm','h_cm'])
     df_int  = calcular_metricas_por_intervalo(df_movement, df_area, intervalo)
 
@@ -569,10 +573,12 @@ def grafica_histogramas_intervalo(df_movement, area_log, video_name, log_dir, fp
     plt.close()
 
     df_int.to_csv(
-        os.path.join(log_dir, f'{video_name}_intervalos.csv'),
+        os.path.join(csv_dir, f'{video_name}_intervalos.csv'),
         index=False, encoding='utf-8'
     )
-def generar_todas_las_graficas(movement_log, area_log, video_name, log_dir, fps=24):
+
+
+def generar_todas_las_graficas(movement_log, area_log, video_name, log_dir, csv_dir, fps=24):
     if not movement_log: return
 
     grouped = {}
@@ -612,9 +618,9 @@ def generar_todas_las_graficas(movement_log, area_log, video_name, log_dir, fps=
         grafica_angulo(df_ang, video_name, log_dir, fps)
         grafica_excentricidad(df_exc, video_name, log_dir, fps)
         grafica_vel_vs_exc(df_vel, df_exc, video_name, log_dir)
-        grafica_histogramas_intervalo(df_movement, area_log, video_name, log_dir, fps)
+        grafica_histogramas_intervalo(df_movement, area_log, video_name, log_dir, csv_dir, fps)
         grafica_histograma_excentricidad(df_exc, video_name, log_dir)
-        generar_tabla_resumen(movement_log, area_log, video_name, log_dir, fps)
+        generar_tabla_resumen(movement_log, area_log, video_name, log_dir, csv_dir, fps)
 
 
 # =============================================================================
@@ -675,6 +681,8 @@ def detect_objects_from_video(video_path, max_detections=100):
     os.makedirs(save_dir, exist_ok=True)
     log_dir = os.path.join('movement_logs', video_name)
     os.makedirs(log_dir, exist_ok=True)
+    csv_dir = os.path.join(log_dir, 'csv')
+    os.makedirs(csv_dir, exist_ok=True)
 
     # Calibracion px -> cm: la camara captura ~28cm de alto en promedio
     # (varia un poco por video, pero esta aproximacion es suficiente).
@@ -833,60 +841,28 @@ def detect_objects_from_video(video_path, max_detections=100):
     out.release()
 
     # CSVs
-    with open(os.path.join(log_dir, f'{video_name}_movement.csv'), 'w',
+    with open(os.path.join(csv_dir, f'{video_name}_movement.csv'), 'w',
               newline='', encoding='utf-8') as f:
         csv.writer(f).writerows(
             [['track_id', 'frame', 'dx_cm', 'dy_cm', 'direction', 'distance_cm']] + movement_log
         )
-    with open(os.path.join(log_dir, f'{video_name}_area.csv'), 'w',
+    with open(os.path.join(csv_dir, f'{video_name}_area.csv'), 'w',
               newline='', encoding='utf-8') as f:
         csv.writer(f).writerows(
             [['track_id', 'frame', 'area_cm2', 'w_cm', 'h_cm']] + area_log
         )
     if split_log:
-        with open(os.path.join(log_dir, f'{video_name}_splits.csv'), 'w',
+        with open(os.path.join(csv_dir, f'{video_name}_splits.csv'), 'w',
                   newline='', encoding='utf-8') as f:
             csv.writer(f).writerows(
                 [['frame', 'padre', 'hijo1', 'hijo2']] + split_log
             )
 
-    generar_todas_las_graficas(movement_log, area_log, video_name, log_dir, fps)
+    generar_todas_las_graficas(movement_log, area_log, video_name, log_dir, csv_dir, fps)
 
 
 # =============================================================================
-# 7. Procesamiento de imagenes
-# =============================================================================
-
-def process_image_files(files):
-    processed_filenames = []
-    os.makedirs('uploads', exist_ok=True)
-    for file in files:
-        if file.filename == '': continue
-        image_path = os.path.join('uploads', file.filename)
-        file.save(image_path)
-        frame = cv2.imread(image_path)
-        frame = cv2.resize(frame, (1020, 600))
-        results = model.track(frame, persist=True, tracker="botsort.yaml")
-        res = results[0]
-        if res.boxes is not None and res.boxes.id is not None:
-            for box, class_id, track_id in zip(
-                res.boxes.xyxy.int().cpu().tolist(),
-                res.boxes.cls.int().cpu().tolist(),
-                res.boxes.id.int().cpu().tolist()
-            ):
-                c = names[class_id]
-                x1, y1, x2, y2 = box
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(frame, f'{track_id} - {c}',
-                            (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
-        processed_filename = f"processed_{file.filename}"
-        cv2.imwrite(os.path.join('uploads', processed_filename), frame)
-        processed_filenames.append(processed_filename)
-    return processed_filenames
-
-
-# =============================================================================
-# 8. Rutas Flask
+# 7. Rutas Flask
 # =============================================================================
 
 @app.route('/')
@@ -897,23 +873,12 @@ def index():
 def upload_video_form():
     return render_template('upload_video.html')
 
-@app.route('/upload_image', methods=['GET', 'POST'])
-def upload_image():
-    if request.method == 'POST':
-        files = request.files.getlist('files')
-        return render_template('show_image.html', filenames=process_image_files(files))
-    return render_template('upload_image.html')
-
 @app.route('/video_feed/<filename>')
 def video_feed(filename):
     return Response(
         detect_objects_from_video(os.path.join('uploads', filename)),
         mimetype='multipart/x-mixed-replace; boundary=frame'
     )
-
-@app.route('/uploads_image/<filename>')
-def send_image(filename):
-    return send_from_directory('uploads', filename)
 
 @app.route('/video/<path:filename>')
 def send_video(filename):

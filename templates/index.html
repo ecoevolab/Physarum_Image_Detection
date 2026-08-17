@@ -1,23 +1,331 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="es" data-theme="">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link href="{{ url_for('static', filename='styles.css') }}" rel="stylesheet" />
-    <title>Object Detection</title>
-    
+    <title>Physarum Tracker</title>
+    <style>
+        /* ── Tokens ── */
+        :root {
+            --bg:           #0f1217;
+            --surface:      #171d27;
+            --surface-2:    #1e2736;
+            --border:       #252f3e;
+            --text:         #d8dde8;
+            --text-muted:   #5e6d82;
+            --accent:       #c9a84c;
+            --accent-dim:   rgba(201, 168, 76, 0.12);
+            --accent-hover: #dbbf6a;
+            --radius:       4px;
+        }
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg:           #f4f3ef;
+                --surface:      #ffffff;
+                --surface-2:    #eeece7;
+                --border:       #dbd9d0;
+                --text:         #1a1814;
+                --text-muted:   #7a7266;
+                --accent:       #7a5e1a;
+                --accent-dim:   rgba(122, 94, 26, 0.08);
+                --accent-hover: #5e4812;
+            }
+        }
+        :root[data-theme="light"] {
+            --bg:           #f4f3ef;
+            --surface:      #ffffff;
+            --surface-2:    #eeece7;
+            --border:       #dbd9d0;
+            --text:         #1a1814;
+            --text-muted:   #7a7266;
+            --accent:       #7a5e1a;
+            --accent-dim:   rgba(122, 94, 26, 0.08);
+            --accent-hover: #5e4812;
+        }
+        :root[data-theme="dark"] {
+            --bg:           #0f1217;
+            --surface:      #171d27;
+            --surface-2:    #1e2736;
+            --border:       #252f3e;
+            --text:         #d8dde8;
+            --text-muted:   #5e6d82;
+            --accent:       #c9a84c;
+            --accent-dim:   rgba(201, 168, 76, 0.12);
+            --accent-hover: #dbbf6a;
+        }
+
+        /* ── Reset ── */
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html { font-size: 16px; }
+
+        body {
+            background-color: var(--bg);
+            color: var(--text);
+            font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 0 24px;
+        }
+
+        /* ── Header barra superior ── */
+        .topbar {
+            width: 100%;
+            max-width: 720px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 28px 0 0;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 16px;
+        }
+        .topbar-brand {
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.72rem;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+        }
+        .theme-toggle {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.7rem;
+            letter-spacing: 0.08em;
+            padding: 4px 10px;
+            border-radius: var(--radius);
+            cursor: pointer;
+            transition: border-color 0.15s, color 0.15s;
+        }
+        .theme-toggle:hover { border-color: var(--accent); color: var(--accent); }
+
+        /* ── Main card ── */
+        main {
+            width: 100%;
+            max-width: 720px;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            padding: 72px 0 48px;
+            gap: 40px;
+        }
+
+        /* ── Specimen label ── */
+        .specimen {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .specimen-eyebrow {
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.68rem;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: var(--accent);
+        }
+        .specimen-name {
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.82rem;
+            color: var(--text-muted);
+            font-style: italic;
+        }
+
+        /* ── Heading ── */
+        h1 {
+            font-size: clamp(2rem, 5vw, 3rem);
+            font-weight: 700;
+            line-height: 1.1;
+            letter-spacing: -0.02em;
+            text-wrap: balance;
+            color: var(--text);
+        }
+        h1 span {
+            color: var(--accent);
+        }
+
+        .description {
+            font-size: 0.95rem;
+            line-height: 1.7;
+            color: var(--text-muted);
+            max-width: 480px;
+        }
+
+        /* ── Divider ── */
+        .divider {
+            height: 1px;
+            background: var(--border);
+        }
+
+        /* ── Upload card ── */
+        .upload-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 32px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .upload-card-label {
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.68rem;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+        }
+        .upload-card-title {
+            font-size: 1.05rem;
+            font-weight: 600;
+            color: var(--text);
+        }
+        .upload-card-desc {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            line-height: 1.6;
+        }
+        .upload-btn {
+            display: inline-block;
+            align-self: flex-start;
+            background: var(--accent);
+            color: var(--bg);
+            font-size: 0.85rem;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            padding: 11px 24px;
+            border-radius: var(--radius);
+            text-decoration: none;
+            transition: background 0.15s, transform 0.1s;
+        }
+        .upload-btn:hover  { background: var(--accent-hover); }
+        .upload-btn:active { transform: translateY(1px); }
+        .upload-btn:focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: 3px;
+        }
+
+        /* ── Specs grid ── */
+        .specs {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1px;
+            background: var(--border);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            overflow: hidden;
+        }
+        .spec {
+            background: var(--surface);
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .spec-label {
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.64rem;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+        }
+        .spec-value {
+            font-size: 0.88rem;
+            font-weight: 500;
+            color: var(--text);
+        }
+
+        /* ── Footer ── */
+        footer {
+            width: 100%;
+            max-width: 720px;
+            padding: 20px 0 32px;
+            border-top: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .footer-text {
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.68rem;
+            letter-spacing: 0.1em;
+            color: var(--text-muted);
+        }
+    </style>
 </head>
 <body>
-    <section id="header">
-        <h1>¡Hola!</h1>
-        <h3>¡La página que siempre habías buscado!</h3>
-    </section>
-    <h1>Detecta a tu physarum</h1>
-    <h2>Selecciona una opción:</h2>
-    <div>
-    <a href="/upload_image">Subir imagen</a>
-    <a href="/start_webcam">Usar webcam</a>
-    <a href="/upload_video_form">Subir video</a>
+
+    <div class="topbar">
+        <span class="topbar-brand">Physarum Tracker — v1.0</span>
+        <button class="theme-toggle" id="themeToggle" aria-label="Cambiar tema">☽ Tema</button>
     </div>
+
+    <main>
+        <div class="specimen">
+            <span class="specimen-eyebrow">Organismo de estudio</span>
+            <span class="specimen-name">Physarum polycephalum · Myxomycota · Amoebozoa</span>
+        </div>
+
+        <div>
+            <h1>Seguimiento y análisis<br>de <span>movimiento</span></h1>
+        </div>
+
+        <p class="description">
+            Procesa videos timelapse para detectar, identificar y rastrear colonias de
+            <em>Physarum polycephalum</em>. El análisis genera métricas de velocidad,
+            área, excentricidad y trayectoria para cada individuo detectado.
+        </p>
+
+        <div class="divider"></div>
+
+        <div class="upload-card">
+            <span class="upload-card-label">Análisis de video</span>
+            <span class="upload-card-title">Cargar timelapse</span>
+            <p class="upload-card-desc">
+                Selecciona un video MP4 para iniciar el procesamiento. Podrás delimitar
+                la región de interés antes de comenzar el análisis.
+            </p>
+            <a href="/upload_video_form" class="upload-btn">Seleccionar video</a>
+        </div>
+
+        <div class="specs">
+            <div class="spec">
+                <span class="spec-label">Modelo</span>
+                <span class="spec-value">YOLO11 Custom</span>
+            </div>
+            <div class="spec">
+                <span class="spec-label">Calibración</span>
+                <span class="spec-value">28 cm / alto</span>
+            </div>
+            <div class="spec">
+                <span class="spec-label">Salida</span>
+                <span class="spec-value">CSV + Gráficas</span>
+            </div>
+        </div>
+    </main>
+
+    <footer>
+        <span class="footer-text">Detección basada en YOLO11 · OpenCV · Flask</span>
+        <span class="footer-text">Análisis de physarum · 2025</span>
+    </footer>
+
+    <script>
+        const toggle = document.getElementById('themeToggle');
+        const root   = document.documentElement;
+
+        const saved = localStorage.getItem('theme');
+        if (saved) root.setAttribute('data-theme', saved);
+
+        toggle.addEventListener('click', () => {
+            const current = root.getAttribute('data-theme');
+            const isDark  = current === 'dark' ||
+                            (!current && window.matchMedia('(prefers-color-scheme: dark)').matches);
+            const next = isDark ? 'light' : 'dark';
+            root.setAttribute('data-theme', next);
+            localStorage.setItem('theme', next);
+        });
+    </script>
+
 </body>
 </html>

@@ -1,61 +1,332 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="es" data-theme="">
 <head>
     <meta charset="UTF-8">
-    <title>Reproducción de Video con Detección</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Análisis en curso — Physarum Tracker</title>
     <style>
+        :root {
+            --bg:           #0f1217;
+            --surface:      #171d27;
+            --surface-2:    #1e2736;
+            --border:       #252f3e;
+            --text:         #d8dde8;
+            --text-muted:   #5e6d82;
+            --accent:       #c9a84c;
+            --accent-dim:   rgba(201, 168, 76, 0.12);
+            --accent-hover: #dbbf6a;
+            --radius:       4px;
+        }
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg:           #f4f3ef;
+                --surface:      #ffffff;
+                --surface-2:    #eeece7;
+                --border:       #dbd9d0;
+                --text:         #1a1814;
+                --text-muted:   #7a7266;
+                --accent:       #7a5e1a;
+                --accent-dim:   rgba(122, 94, 26, 0.08);
+                --accent-hover: #5e4812;
+            }
+        }
+        :root[data-theme="light"] {
+            --bg:           #f4f3ef;
+            --surface:      #ffffff;
+            --surface-2:    #eeece7;
+            --border:       #dbd9d0;
+            --text:         #1a1814;
+            --text-muted:   #7a7266;
+            --accent:       #7a5e1a;
+            --accent-dim:   rgba(122, 94, 26, 0.08);
+            --accent-hover: #5e4812;
+        }
+        :root[data-theme="dark"] {
+            --bg:           #0f1217;
+            --surface:      #171d27;
+            --surface-2:    #1e2736;
+            --border:       #252f3e;
+            --text:         #d8dde8;
+            --text-muted:   #5e6d82;
+            --accent:       #c9a84c;
+            --accent-dim:   rgba(201, 168, 76, 0.12);
+            --accent-hover: #dbbf6a;
+        }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
         body {
+            background-color: var(--bg);
+            color: var(--text);
+            font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+            min-height: 100vh;
             display: flex;
             flex-direction: column;
             align-items: center;
-            font-family: Arial, sans-serif;
-            background-color: #f0f0f0;
-            padding: 20px;
+            padding: 0 24px;
         }
 
-        img, video {
-            width: 1020px;
-            height: 600px;
-            border: 2px solid #ccc;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        .topbar {
+            width: 100%;
+            max-width: 1100px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 28px 0 16px;
+            border-bottom: 1px solid var(--border);
         }
-
-        h1 {
-            margin-bottom: 10px;
-        }
-
-        a {
+        .topbar-brand {
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.72rem;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--text-muted);
             text-decoration: none;
-            color: #007bff;
-            font-size: 18px;
-            margin-top: 10px;
-            margin-left: 10px;
+        }
+        .topbar-brand:hover { color: var(--accent); }
+        .theme-toggle {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.7rem;
+            letter-spacing: 0.08em;
+            padding: 4px 10px;
+            border-radius: var(--radius);
+            cursor: pointer;
+            transition: border-color 0.15s, color 0.15s;
+        }
+        .theme-toggle:hover { border-color: var(--accent); color: var(--accent); }
+
+        main {
+            width: 100%;
+            max-width: 1100px;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 40px 0 48px;
+            gap: 28px;
         }
 
-        a:hover {
-            text-decoration: underline;
+        /* Page header */
+        .page-header {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
         }
+        .page-eyebrow {
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.68rem;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: var(--accent);
+        }
+        h1 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+        .video-filename {
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.78rem;
+            color: var(--text-muted);
+        }
+
+        /* Status badge */
+        .status-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent);
+            animation: pulse 1.8s ease-in-out infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50%       { opacity: 0.3; }
+        }
+        .status-text {
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.72rem;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+        }
+
+        /* Video panels */
+        .video-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+        @media (max-width: 700px) {
+            .video-grid { grid-template-columns: 1fr; }
+        }
+
+        .video-panel {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .video-panel-label {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.66rem;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+        }
+        .video-panel img,
+        .video-panel video {
+            width: 100%;
+            aspect-ratio: 17 / 10;
+            object-fit: contain;
+            background: #000;
+            display: block;
+        }
+
+        /* Downloads */
+        .downloads {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 24px;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 12px;
+        }
+        .downloads-label {
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.68rem;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            flex-basis: 100%;
+            margin-bottom: 4px;
+        }
+        .dl-btn {
+            display: inline-block;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            color: var(--text);
+            font-size: 0.82rem;
+            font-weight: 500;
+            padding: 9px 20px;
+            border-radius: var(--radius);
+            text-decoration: none;
+            transition: border-color 0.15s, color 0.15s, background 0.15s;
+        }
+        .dl-btn:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+            background: var(--accent-dim);
+        }
+        .dl-btn:focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: 3px;
+        }
+
+        footer {
+            width: 100%;
+            max-width: 1100px;
+            padding: 20px 0 32px;
+            border-top: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .footer-text {
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.68rem;
+            letter-spacing: 0.1em;
+            color: var(--text-muted);
+        }
+        .back-link {
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.68rem;
+            letter-spacing: 0.1em;
+            color: var(--text-muted);
+            text-decoration: none;
+        }
+        .back-link:hover { color: var(--accent); }
     </style>
 </head>
 <body>
 
-    <h1>Video con Detección y Seguimiento de Tamaño</h1>
-
-    <img src="{{ url_for('video_feed', filename=filename) }}" alt="Video con detección en vivo" />
-
-    <video controls>
-        <source src="{{ url_for('send_video', filename=filename) }}" type="video/mp4">
-        Tu navegador no soporta el video.
-    </video>
-
-    <div>
-        <a href="{{ url_for('send_video', filename=filename) }}" download>Descargar video original</a>
-        <a href="{{ url_for('send_annotated_video', filename=filename) }}" download>Descargar video anotado</a>
+    <div class="topbar">
+        <a href="/" class="topbar-brand">← Physarum Tracker</a>
+        <button class="theme-toggle" id="themeToggle" aria-label="Cambiar tema">☽ Tema</button>
     </div>
-    
-    <a href="/">Regresar al inicio</a>
+
+    <main>
+        <div class="page-header">
+            <span class="page-eyebrow">Procesamiento activo</span>
+            <h1>Detección y seguimiento</h1>
+            <span class="video-filename">{{ filename }}</span>
+        </div>
+
+        <div class="status-row">
+            <span class="status-dot"></span>
+            <span class="status-text">Analizando frames · YOLO11 · tracking activo</span>
+        </div>
+
+        <div class="video-grid">
+            <div class="video-panel">
+                <span class="video-panel-label">Stream en vivo — detección</span>
+                <img src="{{ url_for('video_feed', filename=filename) }}"
+                     alt="Stream de detección en vivo" />
+            </div>
+            <div class="video-panel">
+                <span class="video-panel-label">Video original</span>
+                <video controls>
+                    <source src="{{ url_for('send_video', filename=filename) }}" type="video/mp4">
+                    Tu navegador no soporta la reproducción de video.
+                </video>
+            </div>
+        </div>
+
+        <div class="downloads">
+            <span class="downloads-label">Descargas</span>
+            <a class="dl-btn"
+               href="{{ url_for('send_video', filename=filename) }}"
+               download>
+                Video original
+            </a>
+            <a class="dl-btn"
+               href="{{ url_for('send_annotated_video', filename=filename) }}"
+               download>
+                Video anotado
+            </a>
+        </div>
+    </main>
+
+    <footer>
+        <a href="/" class="back-link">← Regresar al inicio</a>
+        <span class="footer-text">Physarum Tracker · 2025</span>
+    </footer>
+
+    <script>
+        const toggle = document.getElementById('themeToggle');
+        const root   = document.documentElement;
+        const saved  = localStorage.getItem('theme');
+        if (saved) root.setAttribute('data-theme', saved);
+        toggle.addEventListener('click', () => {
+            const isDark = root.getAttribute('data-theme') === 'dark' ||
+                           (!root.getAttribute('data-theme') && window.matchMedia('(prefers-color-scheme: dark)').matches);
+            const next = isDark ? 'light' : 'dark';
+            root.setAttribute('data-theme', next);
+            localStorage.setItem('theme', next);
+        });
+    </script>
+
 </body>
 </html>
