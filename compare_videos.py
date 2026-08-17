@@ -59,7 +59,7 @@ def calcular_excentricidad(df_area):
 
 
 def cargar_video(video_name, log_dir='movement_logs'):
-    carpeta = os.path.join(log_dir, video_name)
+    carpeta = os.path.join(log_dir, video_name, 'csv')
     df_mov = pd.read_csv(os.path.join(carpeta, f'{video_name}_movement.csv'))
     df_area = pd.read_csv(os.path.join(carpeta, f'{video_name}_area.csv'))
     return df_mov, df_area
@@ -89,15 +89,53 @@ def serie_por_intervalo(df_mov, df_area, intervalo=10):
     return pd.DataFrame(filas)
 
 
+def calcular_continuidad(df_mov, video_name):
+    """Para cada physarum, que tan 'constante' fue su deteccion: que
+    fraccion de su propio rango de vida (desde que aparece hasta que se
+    pierde por ultima vez) realmente tiene frames detectados, y cual fue
+    el hueco mas largo que tuvo. Cobertura cercana a 1 = casi sin huecos."""
+    filas = []
+    for tid, grupo in df_mov.groupby('track_id'):
+        frames = sorted(grupo['frame'].unique())
+        frame_inicio = frames[0]
+        frame_final = frames[-1]
+        duracion = frame_final - frame_inicio + 1
+        frames_totales = len(frames)
+        cobertura = frames_totales / duracion if duracion > 0 else 1.0
+
+        hueco_max = 0
+        for i in range(1, len(frames)):
+            hueco = frames[i] - frames[i - 1] - 1
+            hueco_max = max(hueco_max, hueco)
+
+        filas.append({
+            'video': video_name,
+            'track_id': tid,
+            'frame_inicio': frame_inicio,
+            'frame_final': frame_final,
+            'duracion_frames': duracion,
+            'frames_detectados': frames_totales,
+            'cobertura': round(cobertura, 3),
+            'hueco_max_frames': hueco_max,
+        })
+    return pd.DataFrame(filas)
+
+
 def generar_comparativas(video_names, intervalo=10, log_dir='movement_logs', out_dir=None):
     out_dir = out_dir or os.path.join(log_dir, 'comparativas')
     os.makedirs(out_dir, exist_ok=True)
 
     series = {}
+    continuidad_filas = []
 
     for video in video_names:
         df_mov, df_area = cargar_video(video, log_dir)
         series[video] = serie_por_intervalo(df_mov, df_area, intervalo)
+        continuidad_filas.append(calcular_continuidad(df_mov, video))
+
+    df_continuidad = pd.concat(continuidad_filas, ignore_index=True)
+    df_continuidad = df_continuidad.sort_values(['video', 'cobertura'], ascending=[True, False])
+    df_continuidad.to_csv(os.path.join(out_dir, 'continuidad_physarums.csv'), index=False, encoding='utf-8')
 
     filas_csv = [
         {'video': video, **fila.to_dict()}
@@ -149,12 +187,16 @@ def generar_comparativas(video_names, intervalo=10, log_dir='movement_logs', out
                       'Area (cm2)', 'comparativa_area.png')
 
     print(f'Comparativas guardadas en: {out_dir}')
+    print('Top physarums mas constantes por video (mayor cobertura):')
+    for video in video_names:
+        top = df_continuidad[df_continuidad['video'] == video].head(3)
+        print(f'  {video}: {list(zip(top["track_id"], top["cobertura"]))}')
     return out_dir
 
 
 if __name__ == '__main__':
     LOG_DIR = 'movement_logs'
-    archivos = glob.glob(os.path.join(LOG_DIR, '*', '*_movement.csv'))
+    archivos = glob.glob(os.path.join(LOG_DIR, '*', 'csv', '*_movement.csv'))
     video_names = sorted({os.path.basename(f).replace('_movement.csv', '') for f in archivos})
     print('Videos detectados:', video_names)
     generar_comparativas(video_names, intervalo=10, log_dir=LOG_DIR)
