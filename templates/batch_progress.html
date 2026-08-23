@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Progreso del lote — Physarum Tracker</title>
+    <style>
+        :root {
+            --bg: #0f1217; --surface: #171d27; --surface-2: #1e2736;
+            --border: #252f3e; --text: #d8dde8; --text-muted: #5e6d82;
+            --accent: #c9a84c; --accent-dim: rgba(201,168,76,0.12);
+            --accent-hover: #dbbf6a; --radius: 4px;
+            --ok: #3fb950; --err: #f85149;
+        }
+        @media (prefers-color-scheme: light) { :root {
+            --bg: #f4f3ef; --surface: #ffffff; --surface-2: #eeece7;
+            --border: #dbd9d0; --text: #1a1814; --text-muted: #7a7266;
+            --accent: #7a5e1a; --accent-dim: rgba(122,94,26,0.08); --accent-hover: #5e4812;
+            --ok: #1a7f37; --err: #cf222e;
+        }}
+        :root[data-theme="light"] {
+            --bg: #f4f3ef; --surface: #ffffff; --surface-2: #eeece7;
+            --border: #dbd9d0; --text: #1a1814; --text-muted: #7a7266;
+            --accent: #7a5e1a; --accent-dim: rgba(122,94,26,0.08); --accent-hover: #5e4812;
+            --ok: #1a7f37; --err: #cf222e;
+        }
+        :root[data-theme="dark"] {
+            --bg: #0f1217; --surface: #171d27; --surface-2: #1e2736;
+            --border: #252f3e; --text: #d8dde8; --text-muted: #5e6d82;
+            --accent: #c9a84c; --accent-dim: rgba(201,168,76,0.12); --accent-hover: #dbbf6a;
+            --ok: #3fb950; --err: #f85149;
+        }
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background: var(--bg); color: var(--text);
+            font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+            min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 0 24px;
+        }
+        .topbar {
+            width: 100%; max-width: 720px;
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 28px 0 16px; border-bottom: 1px solid var(--border);
+        }
+        .topbar-brand { font-family: 'Courier New', monospace; font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-muted); text-decoration: none; }
+        .topbar-brand:hover { color: var(--accent); }
+        .theme-toggle { background: none; border: 1px solid var(--border); color: var(--text-muted); font-family: 'Courier New', monospace; font-size: 0.7rem; padding: 4px 10px; border-radius: var(--radius); cursor: pointer; transition: border-color 0.15s, color 0.15s; }
+        .theme-toggle:hover { border-color: var(--accent); color: var(--accent); }
+
+        main { width: 100%; max-width: 720px; flex: 1; display: flex; flex-direction: column; padding: 48px 0; gap: 32px; }
+        .page-eyebrow { font-family: 'Courier New', monospace; font-size: 0.68rem; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); }
+        h1 { font-size: clamp(1.4rem, 3vw, 2rem); font-weight: 700; letter-spacing: -0.02em; margin-top: 8px; }
+        .job-id { font-family: 'Courier New', monospace; font-size: 0.76rem; color: var(--text-muted); margin-top: 4px; }
+
+        .global-status {
+            display: flex; align-items: center; gap: 10px;
+        }
+        .status-dot {
+            width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
+            animation: pulse 1.8s ease-in-out infinite;
+        }
+        .status-dot.done { background: var(--ok); animation: none; }
+        @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.3; } }
+        .status-text { font-family: 'Courier New', monospace; font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-muted); }
+
+        .divider { height: 1px; background: var(--border); }
+
+        /* Video cards */
+        .video-list { display: flex; flex-direction: column; gap: 12px; }
+        .video-card {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius); padding: 20px 24px;
+            display: flex; flex-direction: column; gap: 12px;
+        }
+        .video-card-header { display: flex; justify-content: space-between; align-items: center; }
+        .video-name { font-size: 0.9rem; font-weight: 500; }
+        .badge {
+            font-family: 'Courier New', monospace; font-size: 0.66rem;
+            letter-spacing: 0.1em; text-transform: uppercase;
+            padding: 3px 8px; border-radius: 2px;
+        }
+        .badge-pending  { background: var(--surface-2); color: var(--text-muted); }
+        .badge-running  { background: var(--accent-dim); color: var(--accent); }
+        .badge-done     { background: rgba(63,185,80,0.12); color: var(--ok); }
+        .badge-error    { background: rgba(248,81,73,0.12); color: var(--err); }
+
+        .progress-bar-wrap {
+            height: 4px; background: var(--surface-2);
+            border-radius: 2px; overflow: hidden;
+        }
+        .progress-bar-fill {
+            height: 100%; background: var(--accent);
+            border-radius: 2px; transition: width 0.4s ease;
+        }
+        .progress-bar-fill.done { background: var(--ok); }
+
+        .progress-label {
+            font-family: 'Courier New', monospace; font-size: 0.7rem;
+            color: var(--text-muted); text-align: right;
+        }
+        .dl-btn {
+            display: inline-block; align-self: flex-start;
+            background: var(--surface-2); border: 1px solid var(--border);
+            color: var(--text); font-size: 0.8rem; font-weight: 500;
+            padding: 7px 16px; border-radius: var(--radius); text-decoration: none;
+            transition: border-color 0.15s, color 0.15s, background 0.15s;
+        }
+        .dl-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+
+        footer { width: 100%; max-width: 720px; padding: 20px 0 32px; border-top: 1px solid var(--border); display: flex; justify-content: space-between; }
+        .footer-text, .back-link { font-family: 'Courier New', monospace; font-size: 0.68rem; letter-spacing: 0.1em; color: var(--text-muted); text-decoration: none; }
+        .back-link:hover { color: var(--accent); }
+    </style>
+</head>
+<body>
+    <div class="topbar">
+        <a href="/" class="topbar-brand">← Physarum Tracker</a>
+        <button class="theme-toggle" id="themeToggle">☽ Tema</button>
+    </div>
+
+    <main>
+        <div>
+            <span class="page-eyebrow">Procesamiento en lote</span>
+            <h1>Progreso del análisis</h1>
+            <p class="job-id">Job: {{ job_id }}</p>
+        </div>
+
+        <div class="global-status">
+            <span class="status-dot" id="globalDot"></span>
+            <span class="status-text" id="globalText">Iniciando...</span>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="video-list" id="videoList">
+            <!-- Se rellena dinámicamente -->
+        </div>
+    </main>
+
+    <footer>
+        <a href="/" class="back-link">← Regresar al inicio</a>
+        <span class="footer-text">Physarum Tracker · 2025</span>
+    </footer>
+
+    <script>
+        const JOB_ID = "{{ job_id }}";
+
+        const toggle = document.getElementById('themeToggle');
+        const root   = document.documentElement;
+        const saved  = localStorage.getItem('theme');
+        if (saved) root.setAttribute('data-theme', saved);
+        toggle.addEventListener('click', () => {
+            const isDark = root.getAttribute('data-theme') === 'dark' ||
+                           (!root.getAttribute('data-theme') && window.matchMedia('(prefers-color-scheme: dark)').matches);
+            const next = isDark ? 'light' : 'dark';
+            root.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+        });
+
+        function badgeClass(status) {
+            if (status === 'pending') return 'badge-pending';
+            if (status === 'running') return 'badge-running';
+            if (status === 'done')    return 'badge-done';
+            return 'badge-error';
+        }
+        function badgeLabel(status) {
+            if (status === 'pending') return 'En espera';
+            if (status === 'running') return 'Procesando';
+            if (status === 'done')    return 'Listo';
+            return 'Error';
+        }
+
+        function renderVideos(videos) {
+            const list = document.getElementById('videoList');
+            list.innerHTML = '';
+            videos.forEach(v => {
+                const pct = v.total > 0 ? Math.round((v.frames / v.total) * 100) : (v.status === 'done' ? 100 : 0);
+                const isDone = v.status === 'done';
+                const baseName = v.name.replace(/\.[^.]+$/, '');
+                const dlBtn = isDone
+                    ? `<a class="dl-btn" href="/annotated_video/${baseName}_annotated.mp4" download>Descargar video anotado</a>`
+                    : '';
+                list.innerHTML += `
+                <div class="video-card">
+                    <div class="video-card-header">
+                        <span class="video-name">${v.name}</span>
+                        <span class="badge ${badgeClass(v.status)}">${badgeLabel(v.status)}</span>
+                    </div>
+                    <div class="progress-bar-wrap">
+                        <div class="progress-bar-fill ${isDone ? 'done' : ''}" style="width:${pct}%"></div>
+                    </div>
+                    <p class="progress-label">${isDone ? v.total + ' frames · completo' : (v.total > 0 ? `${v.frames} / ${v.total} frames (${pct}%)` : '—')}</p>
+                    ${dlBtn}
+                </div>`;
+            });
+        }
+
+        let polling;
+
+        async function actualizar() {
+            const res  = await fetch(`/batch_status/${JOB_ID}`);
+            const data = await res.json();
+
+            renderVideos(data.videos);
+
+            const dot  = document.getElementById('globalDot');
+            const text = document.getElementById('globalText');
+
+            if (data.status === 'done') {
+                dot.classList.add('done');
+                text.textContent = 'Todos los videos completados';
+                clearInterval(polling);
+            } else {
+                const corriendo = data.videos.filter(v => v.status === 'running').length;
+                const listos    = data.videos.filter(v => v.status === 'done').length;
+                text.textContent = `${listos} / ${data.videos.length} completados · ${corriendo} en proceso`;
+            }
+        }
+
+        actualizar();
+        polling = setInterval(actualizar, 2000);
+    </script>
+</body>
+</html>

@@ -6,13 +6,15 @@ import cv2
 import numpy as np
 from flask import (
     Flask, render_template, Response, request,
-    redirect, url_for, send_from_directory
+    redirect, url_for, send_from_directory, jsonify
 )
 from ultralytics import YOLO
 import csv
 import math
 import pandas as pd
 import matplotlib.pyplot as plt
+import threading
+import uuid
 
 # =============================================================================
 # 1. Configuracion
@@ -862,7 +864,227 @@ def detect_objects_from_video(video_path, max_detections=100):
 
 
 # =============================================================================
-# 7. Rutas Flask
+# 7. Procesamiento batch (multiples videos en paralelo)
+# =============================================================================
+
+batch_jobs = {}
+batch_lock = threading.Lock()
+MAX_BATCH_WORKERS = 2
+
+
+def _procesar_video_sin_stream(video_path, roi, original_height, fps, job_id, video_idx):
+    x_roi, y_roi, w_roi, h_roi = roi
+    video_name = os.path.splitext(os.path.basename(video_path))[0]
+    log_dir    = os.path.join('movement_logs', video_name)
+    csv_dir    = os.path.join(log_dir, 'csv')
+    save_dir   = os.path.join('detected_frames', video_name)
+    os.makedirs(log_dir, exist_ok=True)
+    os.makedirs(csv_dir, exist_ok=True)
+    os.makedirs(save_dir, exist_ok=True)
+
+    cm_por_px   = ALTURA_CAPTURA_CM / original_height
+    local_model = YOLO("yolo11_custom_4.pt")
+
+    cap   = cv2.VideoCapture(video_path)
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out    = cv2.VideoWriter(
+        os.path.join(save_dir, f"{video_name}_annotated.mp4"),
+        fourcc, 20.0, (w_roi, h_roi)
+    )
+
+    initial_coords     = {}
+    last_coords        = {}
+    last_boxes         = {}
+    id_persistence     = {}
+    id_grace           = {}
+    persistence_buffer = {}
+    ids_activos        = set()
+    id_remap           = {}
+    child_counts       = {}
+    split_log          = []
+    movement_log       = []
+    area_log           = []
+
+    def _resolver_local(yolo_id, cx, cy, box_nuevo, already_claimed):
+        mejor_padre = None; mejor_overlap = 0.0
+        for canon in ids_activos:
+            if canon in already_claimed or canon not in last_boxes or '.' in canon: continue
+            overlap = porcentaje_dentro(box_nuevo, last_boxes[canon])
+            if overlap > SPLIT_OVERLAP_RATIO and overlap > mejor_overlap:
+                mejor_overlap = overlap; mejor_padre = canon
+        if mejor_padre is not None:
+            padre = mejor_padre; already_claimed.add(padre)
+            if padre not in child_counts:
+                child_counts[padre] = 2
+                h1, h2 = f"{padre}.1", f"{padre}.2"
+                for d in [last_coords, last_boxes]:
+                    if padre in d: d[h1] = d[padre]
+                if padre in id_persistence: id_persistence[h1] = id_persistence[padre]
+                if padre in initial_coords:  initial_coords[h1]  = initial_coords[padre]
+                for k, v in list(id_remap.items()):
+                    if v == padre: id_remap[k] = h1
+                for d in [last_coords, last_boxes, id_persistence]: d.pop(padre, None)
+                ids_activos.discard(padre)
+                return h2, ("split_first", padre, h1, h2)
+            else:
+                n = child_counts[padre] + 1; child_counts[padre] = n
+                return f"{padre}.{n}", ("split", padre, f"{padre}.{n}")
+        mejor_reid = None; mejor_dist = float('inf')
+        for canon in list(id_grace):
+            if canon in already_claimed or canon not in last_coords: continue
+            lx, ly = last_coords[canon]
+            d = math.sqrt((cx-lx)**2 + (cy-ly)**2)
+            if d < REID_THRESHOLD and d < mejor_dist:
+                mejor_dist = d; mejor_reid = canon
+        if mejor_reid is not None:
+            already_claimed.add(mejor_reid); id_grace.pop(mejor_reid, None)
+            return mejor_reid, "reid"
+        return str(yolo_id), "new"
+
+    def _actualizar(status, frames=None):
+        with batch_lock:
+            entry = batch_jobs[job_id]['videos'][video_idx]
+            entry['status'] = status
+            if frames is not None:
+                entry['frames'] = frames
+            entry['total'] = total
+
+    _actualizar('running', 0)
+    frame_count = 0
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret: break
+        frame_count += 1
+
+        frame_roi = frame[y_roi:y_roi+h_roi, x_roi:x_roi+w_roi]
+        results   = local_model.track(frame_roi, persist=True, conf=0.4, iou=0.6)
+
+        ids_vistos      = set()
+        already_claimed = set()
+
+        res = results[0]
+        if res.boxes is not None and res.boxes.id is not None:
+            for box, class_id, yolo_id in zip(
+                res.boxes.xyxy.int().cpu().tolist(),
+                res.boxes.cls.int().cpu().tolist(),
+                res.boxes.id.int().cpu().tolist()
+            ):
+                if names.get(class_id, "").lower() != "physarum": continue
+                x1, y1, x2, y2 = box
+                cx = (x1+x2)//2; cy = (y1+y2)//2
+                w_box = x2-x1;   h_box = y2-y1
+                area_px = w_box * h_box
+
+                if yolo_id not in id_remap:
+                    canonical, evento = _resolver_local(yolo_id, cx, cy, box, already_claimed)
+                    id_remap[yolo_id] = canonical
+                    if isinstance(evento, tuple):
+                        if evento[0] == "split_first":
+                            _, padre, h1, h2 = evento
+                            split_log.append((frame_count, padre, h1, h2))
+                        else:
+                            _, padre, hijo = evento
+                            split_log.append((frame_count, padre, padre, hijo))
+
+                canonical = id_remap[yolo_id]
+                ids_vistos.add(canonical)
+                if canonical.count('.') > 1:
+                    raiz = canonical.split('.')[0]
+                    n = child_counts.get(raiz, 1) + 1
+                    child_counts[raiz] = n; canonical = f"{raiz}.{n}"
+                    id_remap[yolo_id] = canonical
+
+                if canonical not in initial_coords:
+                    initial_coords[canonical] = (cx, cy)
+                    id_persistence[canonical]  = 0
+
+                id_grace[canonical]       = 0
+                last_coords[canonical]    = (cx, cy)
+                last_boxes[canonical]     = box
+                id_persistence[canonical] = id_persistence.get(canonical, 0) + 1
+
+                ox, oy = initial_coords[canonical]
+                dx = cx - ox; dy = -(cy - oy)
+                direction, dist = classify_direction(dx, dy)
+
+                dx_cm    = dx * cm_por_px;  dy_cm   = dy * cm_por_px
+                dist_cm  = dist * cm_por_px; area_cm2 = area_px * (cm_por_px**2)
+                w_cm     = w_box * cm_por_px; h_cm   = h_box * cm_por_px
+
+                em = (canonical, frame_count, round(dx_cm,3), round(dy_cm,3), direction, round(dist_cm,3))
+                ea = (canonical, frame_count, round(area_cm2,3), round(w_cm,3), round(h_cm,3))
+
+                p = id_persistence[canonical]
+                if p < MIN_PERSISTENCE:
+                    persistence_buffer.setdefault(canonical, []).append((em, ea))
+                elif p == MIN_PERSISTENCE:
+                    for _em, _ea in persistence_buffer.pop(canonical, []):
+                        movement_log.append(_em); area_log.append(_ea)
+                    movement_log.append(em); area_log.append(ea)
+                else:
+                    movement_log.append(em); area_log.append(ea)
+
+                box_color = (255,150,0) if '.' in canonical else (0,255,0)
+                cv2.rectangle(frame_roi, (x1,y1), (x2,y2), box_color, 2)
+                cv2.putText(frame_roi, canonical, (x1,y1-10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,60), 1)
+                cv2.putText(frame_roi, f'A:{area_cm2:.1f}cm2', (x1,y2+15),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,60), 1)
+
+        ids_activos = set(ids_vistos)
+        for label in list(id_grace):
+            if label not in ids_vistos:
+                id_grace[label] = id_grace.get(label, 0) + 1
+                if id_grace[label] > GRACE_PERIOD:
+                    for d in [initial_coords, last_coords, last_boxes, id_persistence, id_grace]:
+                        d.pop(label, None)
+                    ids_activos.discard(label)
+                    for k, v in list(id_remap.items()):
+                        if v == label: del id_remap[k]
+
+        out.write(frame_roi)
+        if frame_count % 25 == 0:
+            _actualizar('running', frame_count)
+
+    cap.release()
+    out.release()
+
+    with open(os.path.join(csv_dir, f'{video_name}_movement.csv'), 'w', newline='', encoding='utf-8') as f:
+        csv.writer(f).writerows([['track_id','frame','dx_cm','dy_cm','direction','distance_cm']] + movement_log)
+    with open(os.path.join(csv_dir, f'{video_name}_area.csv'), 'w', newline='', encoding='utf-8') as f:
+        csv.writer(f).writerows([['track_id','frame','area_cm2','w_cm','h_cm']] + area_log)
+    if split_log:
+        with open(os.path.join(csv_dir, f'{video_name}_splits.csv'), 'w', newline='', encoding='utf-8') as f:
+            csv.writer(f).writerows([['frame','padre','hijo1','hijo2']] + split_log)
+
+    generar_todas_las_graficas(movement_log, area_log, video_name, log_dir, csv_dir, fps)
+    _actualizar('done', frame_count)
+
+
+def _lanzar_batch(job_id, tareas):
+    semaforo = threading.Semaphore(MAX_BATCH_WORKERS)
+
+    def _worker(video_path, roi, oh, fps, idx):
+        with semaforo:
+            try:
+                _procesar_video_sin_stream(video_path, roi, oh, fps, job_id, idx)
+            except Exception as e:
+                with batch_lock:
+                    batch_jobs[job_id]['videos'][idx]['status'] = f'error: {e}'
+
+    hilos = [threading.Thread(target=_worker, args=(p, r, oh, fps, i), daemon=True)
+             for i, (p, r, oh, fps) in enumerate(tareas)]
+    for t in hilos: t.start()
+    for t in hilos: t.join()
+    with batch_lock:
+        batch_jobs[job_id]['status'] = 'done'
+
+
+# =============================================================================
+# 8. Rutas Flask
 # =============================================================================
 
 @app.route('/')
@@ -908,6 +1130,54 @@ def play_video(filename):
 @app.route('/movement_logs/<filename>')
 def serve_log_file(filename):
     return send_from_directory('movement_logs', filename)
+
+
+@app.route('/upload_batch_form')
+def upload_batch_form():
+    return render_template('upload_batch.html')
+
+
+@app.route('/upload_batch', methods=['POST'])
+def upload_batch():
+    files = request.files.getlist('files')
+    if not files or all(f.filename == '' for f in files):
+        return redirect(url_for('upload_batch_form'))
+
+    os.makedirs('uploads', exist_ok=True)
+    job_id = str(uuid.uuid4())[:8]
+    tareas, videos_info = [], []
+
+    for f in files:
+        if f.filename == '': continue
+        path = os.path.join('uploads', f.filename)
+        f.save(path)
+        cap = cv2.VideoCapture(path)
+        ow  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        oh  = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        cap.release()
+        tareas.append((path, (0, 0, ow, oh), oh, fps))
+        videos_info.append({'name': f.filename, 'status': 'pending', 'frames': 0, 'total': 0})
+
+    with batch_lock:
+        batch_jobs[job_id] = {'status': 'running', 'videos': videos_info}
+
+    threading.Thread(target=_lanzar_batch, args=(job_id, tareas), daemon=True).start()
+    return redirect(url_for('batch_progress_page', job_id=job_id))
+
+
+@app.route('/batch/<job_id>')
+def batch_progress_page(job_id):
+    return render_template('batch_progress.html', job_id=job_id)
+
+
+@app.route('/batch_status/<job_id>')
+def batch_status(job_id):
+    with batch_lock:
+        job = batch_jobs.get(job_id)
+    if job is None:
+        return jsonify({'error': 'job no encontrado'}), 404
+    return jsonify(job)
 
 
 # =============================================================================

@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Carga múltiple — Physarum Tracker</title>
+    <style>
+        :root {
+            --bg: #0f1217; --surface: #171d27; --surface-2: #1e2736;
+            --border: #252f3e; --text: #d8dde8; --text-muted: #5e6d82;
+            --accent: #c9a84c; --accent-dim: rgba(201,168,76,0.12);
+            --accent-hover: #dbbf6a; --radius: 4px;
+        }
+        @media (prefers-color-scheme: light) { :root {
+            --bg: #f4f3ef; --surface: #ffffff; --surface-2: #eeece7;
+            --border: #dbd9d0; --text: #1a1814; --text-muted: #7a7266;
+            --accent: #7a5e1a; --accent-dim: rgba(122,94,26,0.08); --accent-hover: #5e4812;
+        }}
+        :root[data-theme="light"] {
+            --bg: #f4f3ef; --surface: #ffffff; --surface-2: #eeece7;
+            --border: #dbd9d0; --text: #1a1814; --text-muted: #7a7266;
+            --accent: #7a5e1a; --accent-dim: rgba(122,94,26,0.08); --accent-hover: #5e4812;
+        }
+        :root[data-theme="dark"] {
+            --bg: #0f1217; --surface: #171d27; --surface-2: #1e2736;
+            --border: #252f3e; --text: #d8dde8; --text-muted: #5e6d82;
+            --accent: #c9a84c; --accent-dim: rgba(201,168,76,0.12); --accent-hover: #dbbf6a;
+        }
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background: var(--bg); color: var(--text);
+            font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+            min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 0 24px;
+        }
+        .topbar {
+            width: 100%; max-width: 720px;
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 28px 0 16px; border-bottom: 1px solid var(--border);
+        }
+        .topbar-brand { font-family: 'Courier New', monospace; font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-muted); text-decoration: none; }
+        .topbar-brand:hover { color: var(--accent); }
+        .theme-toggle { background: none; border: 1px solid var(--border); color: var(--text-muted); font-family: 'Courier New', monospace; font-size: 0.7rem; letter-spacing: 0.08em; padding: 4px 10px; border-radius: var(--radius); cursor: pointer; transition: border-color 0.15s, color 0.15s; }
+        .theme-toggle:hover { border-color: var(--accent); color: var(--accent); }
+        main { width: 100%; max-width: 720px; flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 64px 0 48px; gap: 36px; }
+        .page-eyebrow { font-family: 'Courier New', monospace; font-size: 0.68rem; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); }
+        h1 { font-size: clamp(1.6rem, 4vw, 2.4rem); font-weight: 700; line-height: 1.15; letter-spacing: -0.02em; margin-top: 10px; }
+        .description { font-size: 0.92rem; line-height: 1.7; color: var(--text-muted); }
+        .divider { height: 1px; background: var(--border); }
+        .notice {
+            background: var(--accent-dim); border: 1px solid var(--accent);
+            border-radius: var(--radius); padding: 14px 18px;
+            font-family: 'Courier New', monospace; font-size: 0.76rem;
+            color: var(--text-muted); line-height: 1.6;
+        }
+        .notice strong { color: var(--accent); }
+        .upload-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 32px; display: flex; flex-direction: column; gap: 24px; }
+        .upload-card-label { font-family: 'Courier New', monospace; font-size: 0.68rem; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-muted); }
+        .drop-zone {
+            border: 1px dashed var(--border); border-radius: var(--radius);
+            padding: 40px 24px; text-align: center; cursor: pointer;
+            transition: border-color 0.15s, background 0.15s; position: relative;
+        }
+        .drop-zone:hover, .drop-zone.dragover { border-color: var(--accent); background: var(--accent-dim); }
+        .drop-zone input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
+        .drop-icon { font-size: 1.8rem; margin-bottom: 12px; display: block; opacity: 0.5; }
+        .drop-text { font-size: 0.88rem; color: var(--text-muted); line-height: 1.6; }
+        .drop-text strong { color: var(--text); font-weight: 500; }
+        .file-list { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+        .file-item { font-family: 'Courier New', monospace; font-size: 0.76rem; color: var(--accent); }
+        .form-actions { display: flex; align-items: center; gap: 16px; }
+        .submit-btn { background: var(--accent); color: var(--bg); font-size: 0.85rem; font-weight: 600; letter-spacing: 0.02em; padding: 11px 28px; border: none; border-radius: var(--radius); cursor: pointer; transition: background 0.15s, transform 0.1s; }
+        .submit-btn:hover { background: var(--accent-hover); }
+        .submit-btn:active { transform: translateY(1px); }
+        .submit-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+        .note { font-family: 'Courier New', monospace; font-size: 0.72rem; color: var(--text-muted); }
+        footer { width: 100%; max-width: 720px; padding: 20px 0 32px; border-top: 1px solid var(--border); display: flex; justify-content: space-between; }
+        .footer-text, .back-link { font-family: 'Courier New', monospace; font-size: 0.68rem; letter-spacing: 0.1em; color: var(--text-muted); text-decoration: none; }
+        .back-link:hover { color: var(--accent); }
+    </style>
+</head>
+<body>
+    <div class="topbar">
+        <a href="/" class="topbar-brand">← Physarum Tracker</a>
+        <button class="theme-toggle" id="themeToggle">☽ Tema</button>
+    </div>
+    <main>
+        <div>
+            <span class="page-eyebrow">Procesamiento en lote</span>
+            <h1>Carga múltiple de videos</h1>
+        </div>
+        <p class="description">
+            Selecciona varios archivos MP4 a la vez. El sistema los procesará en
+            paralelo en segundo plano — puedes cerrar esta página y revisar los
+            resultados en <code>movement_logs/</code> cuando terminen.
+        </p>
+        <div class="notice">
+            <strong>Nota:</strong> en el modo batch el ROI se toma como el frame completo
+            (sin selección manual). Si necesitas recortar una región específica, procesa
+            los videos uno a uno desde la página principal.
+        </div>
+        <div class="divider"></div>
+        <form action="/upload_batch" method="post" enctype="multipart/form-data">
+            <div class="upload-card">
+                <span class="upload-card-label">Archivos de video</span>
+                <div class="drop-zone" id="dropZone">
+                    <input type="file" name="files" id="fileInput" accept="video/*" multiple required>
+                    <span class="drop-icon">▤</span>
+                    <p class="drop-text"><strong>Arrastra los archivos aquí</strong><br>o haz clic para explorar — puedes seleccionar varios</p>
+                    <div class="file-list" id="fileList"></div>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="submit-btn" id="submitBtn" disabled>Iniciar análisis</button>
+                    <span class="note" id="countNote">Ningún archivo seleccionado</span>
+                </div>
+            </div>
+        </form>
+    </main>
+    <footer>
+        <a href="/" class="back-link">← Regresar al inicio</a>
+        <span class="footer-text">Physarum Tracker · 2025</span>
+    </footer>
+    <script>
+        const toggle = document.getElementById('themeToggle');
+        const root   = document.documentElement;
+        const saved  = localStorage.getItem('theme');
+        if (saved) root.setAttribute('data-theme', saved);
+        toggle.addEventListener('click', () => {
+            const isDark = root.getAttribute('data-theme') === 'dark' ||
+                           (!root.getAttribute('data-theme') && window.matchMedia('(prefers-color-scheme: dark)').matches);
+            const next = isDark ? 'light' : 'dark';
+            root.setAttribute('data-theme', next); localStorage.setItem('theme', next);
+        });
+
+        const fileInput = document.getElementById('fileInput');
+        const fileList  = document.getElementById('fileList');
+        const submitBtn = document.getElementById('submitBtn');
+        const countNote = document.getElementById('countNote');
+        const dropZone  = document.getElementById('dropZone');
+
+        function actualizarLista(files) {
+            fileList.innerHTML = '';
+            for (const f of files) {
+                const div = document.createElement('div');
+                div.className = 'file-item';
+                div.textContent = f.name;
+                fileList.appendChild(div);
+            }
+            submitBtn.disabled = files.length === 0;
+            countNote.textContent = files.length === 0 ? 'Ningún archivo' : `${files.length} archivo(s) seleccionado(s)`;
+        }
+
+        fileInput.addEventListener('change', () => actualizarLista([...fileInput.files]));
+        dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+        dropZone.addEventListener('drop', e => {
+            e.preventDefault(); dropZone.classList.remove('dragover');
+            if (e.dataTransfer.files.length > 0) {
+                fileInput.files = e.dataTransfer.files;
+                actualizarLista([...e.dataTransfer.files]);
+            }
+        });
+    </script>
+</body>
+</html>
