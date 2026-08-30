@@ -629,7 +629,7 @@ def generar_todas_las_graficas(movement_log, area_log, video_name, log_dir, csv_
 # 6. Procesamiento de video principal
 # =============================================================================
 
-def detect_objects_from_video(video_path, max_detections=100):
+def detect_objects_from_video(video_path, max_detections=100, altura_cm=None):
     global initial_coords_ref, id_persistence_ref
 
     cap = cv2.VideoCapture(video_path)
@@ -688,7 +688,7 @@ def detect_objects_from_video(video_path, max_detections=100):
 
     # Calibracion px -> cm: la camara captura ~28cm de alto en promedio
     # (varia un poco por video, pero esta aproximacion es suficiente).
-    cm_por_px = ALTURA_CAPTURA_CM / original_height
+    cm_por_px = (altura_cm if altura_cm else ALTURA_CAPTURA_CM) / original_height
 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out    = cv2.VideoWriter(
@@ -869,10 +869,13 @@ def detect_objects_from_video(video_path, max_detections=100):
 
 batch_jobs = {}
 batch_lock = threading.Lock()
-MAX_BATCH_WORKERS = 2
+MAX_BATCH_WORKERS = 5
+
+# Guarda la altura seleccionada por el usuario para cada video (single-video flow)
+video_heights = {}
 
 
-def _procesar_video_sin_stream(video_path, roi, original_height, fps, job_id, video_idx):
+def _procesar_video_sin_stream(video_path, roi, original_height, fps, job_id, video_idx, altura_cm=None):
     x_roi, y_roi, w_roi, h_roi = roi
     video_name = os.path.splitext(os.path.basename(video_path))[0]
     log_dir    = os.path.join('movement_logs', video_name)
@@ -882,7 +885,7 @@ def _procesar_video_sin_stream(video_path, roi, original_height, fps, job_id, vi
     os.makedirs(csv_dir, exist_ok=True)
     os.makedirs(save_dir, exist_ok=True)
 
-    cm_por_px   = ALTURA_CAPTURA_CM / original_height
+    cm_por_px   = (altura_cm if altura_cm else ALTURA_CAPTURA_CM) / original_height
     local_model = YOLO("yolo11_custom_4.pt")
 
     cap   = cv2.VideoCapture(video_path)
@@ -1067,16 +1070,16 @@ def _procesar_video_sin_stream(video_path, roi, original_height, fps, job_id, vi
 def _lanzar_batch(job_id, tareas):
     semaforo = threading.Semaphore(MAX_BATCH_WORKERS)
 
-    def _worker(video_path, roi, oh, fps, idx):
+    def _worker(video_path, roi, oh, fps, altura_cm, idx):
         with semaforo:
             try:
-                _procesar_video_sin_stream(video_path, roi, oh, fps, job_id, idx)
+                _procesar_video_sin_stream(video_path, roi, oh, fps, job_id, idx, altura_cm=altura_cm)
             except Exception as e:
                 with batch_lock:
                     batch_jobs[job_id]['videos'][idx]['status'] = f'error: {e}'
 
-    hilos = [threading.Thread(target=_worker, args=(p, r, oh, fps, i), daemon=True)
-             for i, (p, r, oh, fps) in enumerate(tareas)]
+    hilos = [threading.Thread(target=_worker, args=(p, r, oh, fps, acm, i), daemon=True)
+             for i, (p, r, oh, fps, acm) in enumerate(tareas)]
     for t in hilos: t.start()
     for t in hilos: t.join()
     with batch_lock:
@@ -1097,8 +1100,9 @@ def upload_video_form():
 
 @app.route('/video_feed/<filename>')
 def video_feed(filename):
+    altura_cm = video_heights.get(filename, ALTURA_CAPTURA_CM)
     return Response(
-        detect_objects_from_video(os.path.join('uploads', filename)),
+        detect_objects_from_video(os.path.join('uploads', filename), altura_cm=altura_cm),
         mimetype='multipart/x-mixed-replace; boundary=frame'
     )
 
@@ -1121,6 +1125,13 @@ def upload_video():
     file = request.files['file']
     os.makedirs('uploads', exist_ok=True)
     file.save(os.path.join('uploads', file.filename))
+    try:
+        altura_cm = float(request.form.get('altura_cm', ALTURA_CAPTURA_CM))
+        if altura_cm <= 0:
+            altura_cm = ALTURA_CAPTURA_CM
+    except ValueError:
+        altura_cm = ALTURA_CAPTURA_CM
+    video_heights[file.filename] = altura_cm
     return redirect(url_for('play_video', filename=file.filename))
 
 @app.route('/upload_video/<filename>')
@@ -1147,8 +1158,10 @@ def upload_batch():
     job_id = str(uuid.uuid4())[:8]
     tareas, videos_info = [], []
 
-    for f in files:
-        if f.filename == '': continue
+    alturas_raw = request.form.getlist('altura_cm')
+    files_validos = [f for f in files if f.filename != '']
+
+    for idx, f in enumerate(files_validos):
         path = os.path.join('uploads', f.filename)
         f.save(path)
         cap = cv2.VideoCapture(path)
@@ -1156,7 +1169,12 @@ def upload_batch():
         oh  = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = cap.get(cv2.CAP_PROP_FPS)
         cap.release()
-        tareas.append((path, (0, 0, ow, oh), oh, fps))
+        try:
+            altura_cm = float(alturas_raw[idx]) if idx < len(alturas_raw) and alturas_raw[idx] else ALTURA_CAPTURA_CM
+            if altura_cm <= 0: altura_cm = ALTURA_CAPTURA_CM
+        except ValueError:
+            altura_cm = ALTURA_CAPTURA_CM
+        tareas.append((path, (0, 0, ow, oh), oh, fps, altura_cm))
         videos_info.append({'name': f.filename, 'status': 'pending', 'frames': 0, 'total': 0})
 
     with batch_lock:

@@ -65,8 +65,15 @@
         .drop-icon { font-size: 1.8rem; margin-bottom: 12px; display: block; opacity: 0.5; }
         .drop-text { font-size: 0.88rem; color: var(--text-muted); line-height: 1.6; }
         .drop-text strong { color: var(--text); font-weight: 500; }
-        .file-list { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
-        .file-item { font-family: 'Courier New', monospace; font-size: 0.76rem; color: var(--accent); }
+        .file-list { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+        .file-item { display: flex; align-items: center; gap: 12px; }
+        .file-item-name { font-family: 'Courier New', monospace; font-size: 0.76rem; color: var(--accent); flex: 1; }
+        .file-item input[type="number"] {
+            width: 80px; background: var(--surface-2); border: 1px solid var(--border);
+            color: var(--text); border-radius: var(--radius); padding: 5px 8px;
+            font-size: 0.8rem; font-family: inherit;
+        }
+        .file-item-unit { font-family: 'Courier New', monospace; font-size: 0.7rem; color: var(--text-muted); }
         .form-actions { display: flex; align-items: center; gap: 16px; }
         .submit-btn { background: var(--accent); color: var(--bg); font-size: 0.85rem; font-weight: 600; letter-spacing: 0.02em; padding: 11px 28px; border: none; border-radius: var(--radius); cursor: pointer; transition: background 0.15s, transform 0.1s; }
         .submit-btn:hover { background: var(--accent-hover); }
@@ -106,8 +113,8 @@
                     <input type="file" name="files" id="fileInput" accept="video/*" multiple required>
                     <span class="drop-icon">▤</span>
                     <p class="drop-text"><strong>Arrastra los archivos aquí</strong><br>o haz clic para explorar — puedes seleccionar varios</p>
-                    <div class="file-list" id="fileList"></div>
                 </div>
+                <div class="file-list" id="fileList"></div>
                 <div class="form-actions">
                     <button type="submit" class="submit-btn" id="submitBtn" disabled>Iniciar análisis</button>
                     <span class="note" id="countNote">Ningún archivo seleccionado</span>
@@ -117,7 +124,7 @@
     </main>
     <footer>
         <a href="/" class="back-link">← Regresar al inicio</a>
-        <span class="footer-text">Physarum Tracker · 2025</span>
+        <span class="footer-text">⚠ La gran mayoría de este código fue realizado con ayuda de la inteligencia artificial y luego revisado por humanos · 2026</span>
     </footer>
     <script>
         const toggle = document.getElementById('themeToggle');
@@ -142,7 +149,11 @@
             for (const f of files) {
                 const div = document.createElement('div');
                 div.className = 'file-item';
-                div.textContent = f.name;
+                div.innerHTML = `
+                    <span class="file-item-name">${f.name}</span>
+                    <input type="number" name="altura_cm" value="28" min="1" step="0.5"
+                           title="Altura capturada en cm para este video">
+                    <span class="file-item-unit">cm</span>`;
                 fileList.appendChild(div);
             }
             submitBtn.disabled = files.length === 0;
