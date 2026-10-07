@@ -228,7 +228,10 @@ def calcular_velocidad(df_movement):
 def calcular_excentricidad(df_area):
     if 'w_cm' in df_area.columns and 'h_cm' in df_area.columns:
         df = df_area.copy()
-        df['excentricidad'] = df['w_cm'] / df['h_cm'].replace(0, np.nan)
+        w = df['w_cm']; h = df['h_cm'].replace(0, np.nan)
+        pos = (w / h - 1).clip(0, 10)
+        neg = (1 - h / w).clip(-10, 0)
+        df['excentricidad'] = np.where(w >= h, pos, neg)
         return df[['track_id', 'frame', 'excentricidad']]
     return None
 
@@ -308,9 +311,9 @@ def grafica_excentricidad(df_exc, video_name, log_dir, fps=24):
         g = g.sort_values('frame')
         ax.plot(g['frame'].apply(lambda f: frames_a_horas(f, fps)),
                 suavizar_por_frame(g['frame'], g['excentricidad']), linewidth=1.5, alpha=0.85, label=tid)
-    ax.axhline(1.0, color='white', linewidth=0.5, alpha=0.4, linestyle='--')
+    ax.axhline(0.0, color='white', linewidth=0.5, alpha=0.4, linestyle='--')
     _plot_save(fig, ax, 'Excentricidad vs Tiempo',
-               'Tiempo (horas)', 'Excentricidad', video_name, 'excentricidad', log_dir)
+               'Tiempo (horas)', 'Excentricidad  [0 = circular, + = ancho, − = alto]', video_name, 'excentricidad', log_dir)
 
 
 def grafica_area(grouped_a, video_name, log_dir, fps=24):
@@ -331,11 +334,13 @@ def grafica_histograma_excentricidad(df_exc, video_name, log_dir):
     fig, ax = plt.subplots(figsize=(8, 5))
     fig.patch.set_facecolor(BG_COLOR); apply_dark_style(ax)
     ax.hist(vals, bins=25, color='#7B5EA7', edgecolor='#444466', alpha=0.85)
+    ax.axvline(0.0, color='white', linewidth=0.8, alpha=0.5, linestyle='--', label='Circular (0)')
     media = vals.mean()
     ax.axvline(media, color='#FFB060', linewidth=1.5, linestyle='--',
                label=f'Media: {media:.2f}')
     _plot_save(fig, ax, f'Distribucion de excentricidad - {video_name}',
-               'Excentricidad', 'Frecuencia', video_name, 'histograma_excentricidad', log_dir)
+               'Excentricidad  [0 = circular, + = ancho, − = alto]', 'Frecuencia',
+               video_name, 'histograma_excentricidad', log_dir)
 
 
 def grafica_vel_vs_exc(df_vel, df_exc, video_name, log_dir):
@@ -780,7 +785,8 @@ def detect_objects_from_video(video_path, max_detections=100, altura_cm=None):
 
                 # Buffer hasta confirmar MIN_PERSISTENCE
                 entrada_mov  = (canonical, frame_count, round(dx_cm, 3), round(dy_cm, 3),
-                                 direction, round(dist_cm, 3))
+                                 direction, round(dist_cm, 3),
+                                 round(cx * cm_por_px, 3), round(cy * cm_por_px, 3))
                 entrada_area = (canonical, frame_count, round(area_cm2, 3),
                                  round(w_cm, 3), round(h_cm, 3))
 
@@ -846,7 +852,7 @@ def detect_objects_from_video(video_path, max_detections=100, altura_cm=None):
     with open(os.path.join(csv_dir, f'{video_name}_movement.csv'), 'w',
               newline='', encoding='utf-8') as f:
         csv.writer(f).writerows(
-            [['track_id', 'frame', 'dx_cm', 'dy_cm', 'direction', 'distance_cm']] + movement_log
+            [['track_id', 'frame', 'dx_cm', 'dy_cm', 'direction', 'distance_cm', 'cx_cm', 'cy_cm']] + movement_log
         )
     with open(os.path.join(csv_dir, f'{video_name}_area.csv'), 'w',
               newline='', encoding='utf-8') as f:
@@ -1017,7 +1023,8 @@ def _procesar_video_sin_stream(video_path, roi, original_height, fps, job_id, vi
                 dist_cm  = dist * cm_por_px; area_cm2 = area_px * (cm_por_px**2)
                 w_cm     = w_box * cm_por_px; h_cm   = h_box * cm_por_px
 
-                em = (canonical, frame_count, round(dx_cm,3), round(dy_cm,3), direction, round(dist_cm,3))
+                em = (canonical, frame_count, round(dx_cm,3), round(dy_cm,3), direction, round(dist_cm,3),
+                      round(cx * cm_por_px,3), round(cy * cm_por_px,3))
                 ea = (canonical, frame_count, round(area_cm2,3), round(w_cm,3), round(h_cm,3))
 
                 p = id_persistence[canonical]
@@ -1056,7 +1063,7 @@ def _procesar_video_sin_stream(video_path, roi, original_height, fps, job_id, vi
     out.release()
 
     with open(os.path.join(csv_dir, f'{video_name}_movement.csv'), 'w', newline='', encoding='utf-8') as f:
-        csv.writer(f).writerows([['track_id','frame','dx_cm','dy_cm','direction','distance_cm']] + movement_log)
+        csv.writer(f).writerows([['track_id','frame','dx_cm','dy_cm','direction','distance_cm','cx_cm','cy_cm']] + movement_log)
     with open(os.path.join(csv_dir, f'{video_name}_area.csv'), 'w', newline='', encoding='utf-8') as f:
         csv.writer(f).writerows([['track_id','frame','area_cm2','w_cm','h_cm']] + area_log)
     if split_log:
