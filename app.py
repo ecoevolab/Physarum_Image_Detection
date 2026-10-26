@@ -372,6 +372,27 @@ def grafica_trayectoria(grouped, video_name, log_dir):
                'dx (cm)', 'dy (cm)', video_name, 'trajectory2D', log_dir)
 
 
+
+def grafica_trayectoria_global(grouped, video_name, log_dir):
+    """Trayectorias en coordenadas absolutas (cx_cm, cy_cm) del frame.
+    Sirve para ver si un ID que desaparece y otro que aparece cerca son el mismo physarum."""
+    fig, ax = plt.subplots(figsize=(8, 8))
+    fig.patch.set_facecolor(BG_COLOR); apply_dark_style(ax)
+    for tid, data in grouped.items():
+        xs, ys = data['cx'], data['cy']
+        line, = ax.plot(xs, ys, linewidth=1.5, alpha=0.8, label=tid)
+        color = line.get_color()
+        ax.scatter([xs[0]], [ys[0]], marker='o', s=60, color=color, zorder=5)
+        ax.scatter([xs[-1]], [ys[-1]], marker='*', s=120, color=color, zorder=5)
+        ax.annotate(str(tid), (xs[0], ys[0]), color=color, fontsize=7,
+                    xytext=(4, 4), textcoords='offset points')
+        ax.annotate(str(tid), (xs[-1], ys[-1]), color=color, fontsize=7,
+                    xytext=(4, -10), textcoords='offset points')
+    ax.invert_yaxis()  # mismo sentido que la imagen (y crece hacia abajo)
+    ax.set_aspect('equal', adjustable='datalim')
+    _plot_save(fig, ax, 'Trayectoria 2D global (o = inicio, * = fin)',
+               'x (cm)', 'y (cm)', video_name, 'trajectory2D_global', log_dir)
+
 def grafica_distancia(grouped, video_name, log_dir):
     fig, ax = plt.subplots(figsize=(10, 4))
     fig.patch.set_facecolor(BG_COLOR); apply_dark_style(ax)
@@ -407,7 +428,7 @@ def generar_tabla_resumen(movement_log, area_log, video_name, log_dir, csv_dir, 
         return
 
     df_mov  = pd.DataFrame(movement_log,
-                           columns=['track_id','frame','dx_cm','dy_cm','direction','distance_cm'])
+                           columns=['track_id','frame','dx_cm','dy_cm','direction','distance_cm','cx_cm','cy_cm'])
     df_area = pd.DataFrame(area_log,
                            columns=['track_id','frame','area_cm2','w_cm','h_cm'])
 
@@ -589,15 +610,18 @@ def generar_todas_las_graficas(movement_log, area_log, video_name, log_dir, csv_
     if not movement_log: return
 
     grouped = {}
-    for tid, fr, dx, dy, direction, dist in movement_log:
+    for tid, fr, dx, dy, direction, dist, cx, cy in movement_log:
         if tid not in grouped:
-            grouped[tid] = {'frames': [], 'horas': [], 'dx': [], 'dy': [], 'dist': [], 'dirs': []}
+            grouped[tid] = {'frames': [], 'horas': [], 'dx': [], 'dy': [], 'dist': [], 'dirs': [],
+                            'cx': [], 'cy': []}
         grouped[tid]['frames'].append(fr)
         grouped[tid]['horas'].append(frames_a_horas(fr, fps))  # <-- nuevo
         grouped[tid]['dx'].append(dx)
         grouped[tid]['dy'].append(dy)
         grouped[tid]['dist'].append(dist)
         grouped[tid]['dirs'].append(direction)
+        grouped[tid]['cx'].append(cx)
+        grouped[tid]['cy'].append(cy)
 
     grouped_a = {}
     for tid, fr, area, w, h in area_log:
@@ -608,7 +632,7 @@ def generar_todas_las_graficas(movement_log, area_log, video_name, log_dir, csv_
 
     df_movement  = pd.DataFrame(movement_log,
                                 columns=['track_id', 'frame', 'dx_cm', 'dy_cm',
-                                         'direction', 'distance_cm'])
+                                         'direction', 'distance_cm', 'cx_cm', 'cy_cm'])
     df_area_full = pd.DataFrame(area_log,
                                 columns=['track_id', 'frame', 'area_cm2', 'w_cm', 'h_cm'])
 
@@ -617,6 +641,7 @@ def generar_todas_las_graficas(movement_log, area_log, video_name, log_dir, csv_
     df_ang = calcular_angulo(df_movement)
 
     grafica_trayectoria(grouped, video_name, log_dir)
+    grafica_trayectoria_global(grouped, video_name, log_dir)
     grafica_distancia(grouped, video_name, log_dir)       # ya usa 'horas'
     grafica_rosa_vientos(grouped, video_name, log_dir)
     grafica_area(grouped_a, video_name, log_dir, fps)
